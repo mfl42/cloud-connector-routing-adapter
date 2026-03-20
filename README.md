@@ -77,6 +77,9 @@ warnings/unsupported items when encountered:
 This repository is licensed under Apache License 2.0.
 See [LICENSE](LICENSE).
 
+Copyright 2026 Michel Besnard.
+See [NOTICE](NOTICE).
+
 This repository is intended to be published as a standalone project.
 
 ## Compatibility
