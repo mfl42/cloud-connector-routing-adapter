@@ -49,6 +49,16 @@ Primary runbooks:
 - [CHAOS.md](CHAOS.md)
 - [FUZZING.md](FUZZING.md)
 
+## Validated Target Provenance
+
+The live campaigns in this report were executed against:
+
+- VyOS `1.5-rolling-202603190955`
+- release flavor: `vpp`
+- build commit: `96ff51d3d2e559`
+- image provenance: built from the author's separate compatible VyOS build workflow
+- management/control path: VyOS HTTPS API
+
 ## Executed Campaigns
 
 ### Fast Regression
@@ -69,6 +79,7 @@ Intent:
 Result:
 
 - passing on the current branch state
+- rerun from the standalone repository root after export and passing there as well
 
 ### Boundary Campaign
 
