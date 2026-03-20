@@ -1,0 +1,84 @@
+{
+  "apiVersion": "network.t-caas.telekom.com/v1alpha1",
+  "kind": "NodeNetworkConfig",
+  "metadata": {
+    "name": "vyos-lab-node"
+  },
+  "spec": {
+    "revision": "rev-0001",
+    "localVRFs": {
+      "tenant-a": {
+        "localASN": 65040,
+        "table": 1001,
+        "interfaces": [
+          "eth1"
+        ],
+        "bgpPeers": [
+          {
+            "address": "192.0.2.254",
+            "remoteASN": 65010,
+            "addressFamilies": [
+              "ipv4"
+            ],
+            "updateSource": "lo"
+          },
+          {
+            "address": "2001:db8:ffff::254",
+            "remoteASN": 65020,
+            "addressFamilies": [
+              "ipv6-unicast"
+            ],
+            "ebgpMultihop": 2
+          }
+        ],
+        "policyRoutes": [
+          {
+            "trafficMatch": {
+              "interface": "eth1",
+              "sourcePrefixes": [
+                "10.10.10.0/24"
+              ],
+              "destinationPrefixes": [
+                "172.20.0.0/16"
+              ],
+              "protocols": [
+                "tcp"
+              ]
+            },
+            "nextHop": {
+              "vrf": "tenant-a"
+            }
+          }
+        ],
+        "staticRoutes": [
+          {
+            "prefix": "172.20.0.0/16",
+            "nextHop": {
+              "address": "192.0.2.1"
+            }
+          }
+        ]
+      }
+    },
+    "fabricVRFs": {
+      "fabric-a": {
+        "localASN": 65100,
+        "table": 1100,
+        "bgpPeers": [
+          {
+            "address": "198.51.100.1",
+            "remoteASN": 65101
+          }
+        ],
+        "staticRoutes": [
+          {
+            "prefix": "2001:db8:100::/64",
+            "nextHop": {
+              "address": "2001:db8::1"
+            }
+          }
+        ]
+      }
+    }
+  }
+}

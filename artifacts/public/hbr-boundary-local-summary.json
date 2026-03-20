@@ -1,0 +1,47 @@
+{
+  "scenarioCount": 7,
+  "scenarios": [
+    {
+      "commandCount": 2,
+      "scenario": "interface-boundaries",
+      "unsupportedCount": 2,
+      "warningCount": 1
+    },
+    {
+      "commandCount": 8,
+      "scenario": "static-and-policy-boundaries",
+      "unsupportedCount": 0,
+      "warningCount": 7
+    },
+    {
+      "commandCount": 6,
+      "scenario": "bgp-boundaries",
+      "unsupportedCount": 2,
+      "warningCount": 4
+    },
+    {
+      "commandCount": 5,
+      "scenario": "netplan-boundaries",
+      "unsupportedCount": 0,
+      "warningCount": 1
+    },
+    {
+      "commandCount": 5,
+      "scenario": "invalid-value-boundaries",
+      "unsupportedCount": 0,
+      "warningCount": 12
+    },
+    {
+      "applyPerformed": false,
+      "commandCount": 0,
+      "desiredRevision": "digest-e3b0c44298fc",
+      "scenario": "zero-command-reconcile-boundary"
+    },
+    {
+      "caseCount": 3,
+      "scenario": "malformed-structure-boundaries"
+    }
+  ],
+  "artifactSet": "private/raw",
+  "publicSummary": true
+}

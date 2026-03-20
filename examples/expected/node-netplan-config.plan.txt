@@ -1,0 +1,5 @@
+# Commands
+set interfaces ethernet eth1 address '192.0.2.230/24'
+set protocols static route 0.0.0.0/0 next-hop '192.0.2.1'
+set system name-server '192.0.2.53'
+set system name-server '1.1.1.1'
