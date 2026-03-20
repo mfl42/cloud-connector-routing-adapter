@@ -1,8 +1,13 @@
 # Cloud Connector Routing Adapter
 
-This directory contains an external Python adapter scaffold for mapping
-Sylva/Cloud Connector style HBR resources onto a routing target that is
-currently compatible with VyOS.
+An external Cloud Connector / HBR-style routing adapter currently
+compatible with VyOS.
+
+This project provides an independent controller-side adapter that maps
+`NodeNetworkConfig` and `NodeNetplanConfig` style resources onto a routing
+target through a transparent, testable translation layer. It is designed to
+work with the current VyOS-compatible profile without presenting itself as an
+official VyOS project.
 
 The current goal is not to replace the HBR operator or CRA directly inside
 the target NOS. Instead, this scaffold provides an independent adapter that can:
