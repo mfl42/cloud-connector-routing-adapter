@@ -87,6 +87,17 @@ This repository is intended to be published as a standalone project.
 This project is an independent adapter that is currently validated as
 compatible with VyOS. It is not an official VyOS project.
 
+## Validated Target Provenance
+
+The current live validation target was:
+
+- VyOS `1.5-rolling-202603190955`
+- release flavor: `vpp`
+- build commit: `96ff51d3d2e559`
+- built on `2026-03-19`
+- exercised through the VyOS HTTPS API
+- produced from the author's separate compatible VyOS build workflow
+
 ## Layout
 
 - `hbr_vyos_adapter/models.py`

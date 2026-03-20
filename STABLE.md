@@ -47,6 +47,13 @@ The strongest live result so far is:
 - the adapter recovered cleanly after guest reboot, hard reset, and full
   shutdown/start
 
+The validated live target for those campaigns was:
+
+- VyOS `1.5-rolling-202603190955`
+- release flavor: `vpp`
+- build commit: `96ff51d3d2e559`
+- image provenance: built from the author's separate compatible VyOS build workflow
+
 ## Supported Operating Model
 
 Use this component when all of these are true:
