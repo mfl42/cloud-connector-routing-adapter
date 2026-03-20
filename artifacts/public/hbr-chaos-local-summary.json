@@ -1,0 +1,52 @@
+{
+  "scenarioCount": 4,
+  "scenarios": [
+    {
+      "first_error": "VyOS API read timed out during chaos test",
+      "scenario": "vyos-timeout-recovery",
+      "second_apply_performed": true,
+      "third_pending_command_count": 0,
+      "vyos_call_batches": [
+        24,
+        24
+      ]
+    },
+    {
+      "first_error": "Kubernetes status patch 409 conflict",
+      "scenario": "status-writer-failure-recovery",
+      "second_status_write_performed": true,
+      "state_preserved_after_failure": true
+    },
+    {
+      "iteration_apply_flags": [
+        true,
+        true,
+        false,
+        false
+      ],
+      "iteration_deleted_counts": [
+        0,
+        0,
+        1,
+        1
+      ],
+      "iteration_pruned_counts": [
+        0,
+        0,
+        1,
+        1
+      ],
+      "scenario": "watch-churn-and-prune",
+      "vyos_apply_calls": 2
+    },
+    {
+      "first_patch_url": "https://fake-k8s.local/apis/network.t-caas.telekom.com/v1alpha1/namespaces/default/nodenetplanconfigs/vyos-lab-node/status",
+      "http_patch_calls": 4,
+      "patch_count": 2,
+      "response_count": 2,
+      "scenario": "k8s-patch-retry"
+    }
+  ],
+  "artifactSet": "private/raw",
+  "publicSummary": true
+}

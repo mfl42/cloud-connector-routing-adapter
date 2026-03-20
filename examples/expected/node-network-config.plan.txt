@@ -1,0 +1,25 @@
+# Commands
+set vrf name 'fabric-a' table '1100'
+set vrf name 'fabric-a' protocols static route6 '2001:db8:100::/64' next-hop '2001:db8::1'
+set vrf name 'fabric-a' protocols bgp system-as '65100'
+set vrf name 'fabric-a' protocols bgp neighbor '198.51.100.1' remote-as '65101'
+set vrf name 'fabric-a' protocols bgp neighbor '198.51.100.1' address-family ipv4-unicast
+set vrf name 'tenant-a' table '1001'
+set interfaces ethernet eth1 vrf 'tenant-a'
+set vrf name 'tenant-a' protocols static route '172.20.0.0/16' next-hop '192.0.2.1'
+set policy route 'hbr-tenant-a' interface 'eth1'
+set policy route 'hbr-tenant-a' rule '10' source address '10.10.10.0/24'
+set policy route 'hbr-tenant-a' rule '10' destination address '172.20.0.0/16'
+set policy route 'hbr-tenant-a' rule '10' protocol 'tcp'
+set policy route 'hbr-tenant-a' rule '10' set vrf 'tenant-a'
+set vrf name 'tenant-a' protocols bgp system-as '65040'
+set vrf name 'tenant-a' protocols bgp neighbor '192.0.2.254' remote-as '65010'
+set vrf name 'tenant-a' protocols bgp neighbor '192.0.2.254' update-source 'lo'
+set vrf name 'tenant-a' protocols bgp neighbor '192.0.2.254' address-family ipv4-unicast
+set vrf name 'tenant-a' protocols bgp neighbor '2001:db8:ffff::254' remote-as '65020'
+set vrf name 'tenant-a' protocols bgp neighbor '2001:db8:ffff::254' ebgp-multihop '2'
+set vrf name 'tenant-a' protocols bgp neighbor '2001:db8:ffff::254' address-family ipv6-unicast
+
+# Warnings
+- tracking HBR revision rev-0001
+- vrf fabric-a BGP peer 198.51.100.1 has no addressFamilies; defaulting to ipv4-unicast

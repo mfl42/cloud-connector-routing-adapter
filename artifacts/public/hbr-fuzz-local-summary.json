@@ -1,0 +1,333 @@
+{
+  "caseCount": 40,
+  "cases": [
+    {
+      "apply_call_count": 1,
+      "case": 1,
+      "pending_command_count": 44,
+      "repeat_pending_command_count": 0,
+      "unsupported_count": 3,
+      "warning_count": 6
+    },
+    {
+      "apply_call_count": 1,
+      "case": 2,
+      "pending_command_count": 41,
+      "repeat_pending_command_count": 0,
+      "unsupported_count": 0,
+      "warning_count": 8
+    },
+    {
+      "apply_call_count": 1,
+      "case": 3,
+      "pending_command_count": 35,
+      "repeat_pending_command_count": 0,
+      "unsupported_count": 5,
+      "warning_count": 4
+    },
+    {
+      "apply_call_count": 1,
+      "case": 4,
+      "pending_command_count": 36,
+      "repeat_pending_command_count": 0,
+      "unsupported_count": 1,
+      "warning_count": 5
+    },
+    {
+      "apply_call_count": 1,
+      "case": 5,
+      "pending_command_count": 42,
+      "repeat_pending_command_count": 0,
+      "unsupported_count": 3,
+      "warning_count": 8
+    },
+    {
+      "apply_call_count": 1,
+      "case": 6,
+      "pending_command_count": 34,
+      "repeat_pending_command_count": 0,
+      "unsupported_count": 1,
+      "warning_count": 5
+    },
+    {
+      "apply_call_count": 1,
+      "case": 7,
+      "pending_command_count": 29,
+      "repeat_pending_command_count": 0,
+      "unsupported_count": 1,
+      "warning_count": 4
+    },
+    {
+      "apply_call_count": 1,
+      "case": 8,
+      "pending_command_count": 37,
+      "repeat_pending_command_count": 0,
+      "unsupported_count": 1,
+      "warning_count": 10
+    },
+    {
+      "apply_call_count": 1,
+      "case": 9,
+      "pending_command_count": 33,
+      "repeat_pending_command_count": 0,
+      "unsupported_count": 2,
+      "warning_count": 5
+    },
+    {
+      "apply_call_count": 1,
+      "case": 10,
+      "pending_command_count": 28,
+      "repeat_pending_command_count": 0,
+      "unsupported_count": 3,
+      "warning_count": 8
+    },
+    {
+      "apply_call_count": 1,
+      "case": 11,
+      "pending_command_count": 37,
+      "repeat_pending_command_count": 0,
+      "unsupported_count": 5,
+      "warning_count": 4
+    },
+    {
+      "apply_call_count": 1,
+      "case": 12,
+      "pending_command_count": 38,
+      "repeat_pending_command_count": 0,
+      "unsupported_count": 3,
+      "warning_count": 4
+    },
+    {
+      "apply_call_count": 1,
+      "case": 13,
+      "pending_command_count": 46,
+      "repeat_pending_command_count": 0,
+      "unsupported_count": 1,
+      "warning_count": 6
+    },
+    {
+      "apply_call_count": 1,
+      "case": 14,
+      "pending_command_count": 43,
+      "repeat_pending_command_count": 0,
+      "unsupported_count": 3,
+      "warning_count": 4
+    },
+    {
+      "apply_call_count": 1,
+      "case": 15,
+      "pending_command_count": 28,
+      "repeat_pending_command_count": 0,
+      "unsupported_count": 2,
+      "warning_count": 5
+    },
+    {
+      "apply_call_count": 1,
+      "case": 16,
+      "pending_command_count": 40,
+      "repeat_pending_command_count": 0,
+      "unsupported_count": 5,
+      "warning_count": 6
+    },
+    {
+      "apply_call_count": 1,
+      "case": 17,
+      "pending_command_count": 27,
+      "repeat_pending_command_count": 0,
+      "unsupported_count": 4,
+      "warning_count": 5
+    },
+    {
+      "apply_call_count": 1,
+      "case": 18,
+      "pending_command_count": 36,
+      "repeat_pending_command_count": 0,
+      "unsupported_count": 3,
+      "warning_count": 6
+    },
+    {
+      "apply_call_count": 1,
+      "case": 19,
+      "pending_command_count": 40,
+      "repeat_pending_command_count": 0,
+      "unsupported_count": 2,
+      "warning_count": 8
+    },
+    {
+      "apply_call_count": 1,
+      "case": 20,
+      "pending_command_count": 34,
+      "repeat_pending_command_count": 0,
+      "unsupported_count": 3,
+      "warning_count": 8
+    },
+    {
+      "apply_call_count": 1,
+      "case": 21,
+      "pending_command_count": 42,
+      "repeat_pending_command_count": 0,
+      "unsupported_count": 4,
+      "warning_count": 5
+    },
+    {
+      "apply_call_count": 1,
+      "case": 22,
+      "pending_command_count": 38,
+      "repeat_pending_command_count": 0,
+      "unsupported_count": 5,
+      "warning_count": 7
+    },
+    {
+      "apply_call_count": 1,
+      "case": 23,
+      "pending_command_count": 43,
+      "repeat_pending_command_count": 0,
+      "unsupported_count": 3,
+      "warning_count": 5
+    },
+    {
+      "apply_call_count": 1,
+      "case": 24,
+      "pending_command_count": 46,
+      "repeat_pending_command_count": 0,
+      "unsupported_count": 2,
+      "warning_count": 10
+    },
+    {
+      "apply_call_count": 1,
+      "case": 25,
+      "pending_command_count": 35,
+      "repeat_pending_command_count": 0,
+      "unsupported_count": 3,
+      "warning_count": 4
+    },
+    {
+      "apply_call_count": 1,
+      "case": 26,
+      "pending_command_count": 51,
+      "repeat_pending_command_count": 0,
+      "unsupported_count": 5,
+      "warning_count": 6
+    },
+    {
+      "apply_call_count": 1,
+      "case": 27,
+      "pending_command_count": 50,
+      "repeat_pending_command_count": 0,
+      "unsupported_count": 2,
+      "warning_count": 5
+    },
+    {
+      "apply_call_count": 1,
+      "case": 28,
+      "pending_command_count": 42,
+      "repeat_pending_command_count": 0,
+      "unsupported_count": 3,
+      "warning_count": 6
+    },
+    {
+      "apply_call_count": 1,
+      "case": 29,
+      "pending_command_count": 41,
+      "repeat_pending_command_count": 0,
+      "unsupported_count": 5,
+      "warning_count": 8
+    },
+    {
+      "apply_call_count": 1,
+      "case": 30,
+      "pending_command_count": 39,
+      "repeat_pending_command_count": 0,
+      "unsupported_count": 1,
+      "warning_count": 6
+    },
+    {
+      "apply_call_count": 1,
+      "case": 31,
+      "pending_command_count": 36,
+      "repeat_pending_command_count": 0,
+      "unsupported_count": 3,
+      "warning_count": 5
+    },
+    {
+      "apply_call_count": 1,
+      "case": 32,
+      "pending_command_count": 47,
+      "repeat_pending_command_count": 0,
+      "unsupported_count": 2,
+      "warning_count": 6
+    },
+    {
+      "apply_call_count": 1,
+      "case": 33,
+      "pending_command_count": 38,
+      "repeat_pending_command_count": 0,
+      "unsupported_count": 4,
+      "warning_count": 2
+    },
+    {
+      "apply_call_count": 1,
+      "case": 34,
+      "pending_command_count": 38,
+      "repeat_pending_command_count": 0,
+      "unsupported_count": 5,
+      "warning_count": 5
+    },
+    {
+      "apply_call_count": 1,
+      "case": 35,
+      "pending_command_count": 31,
+      "repeat_pending_command_count": 0,
+      "unsupported_count": 1,
+      "warning_count": 3
+    },
+    {
+      "apply_call_count": 1,
+      "case": 36,
+      "pending_command_count": 37,
+      "repeat_pending_command_count": 0,
+      "unsupported_count": 2,
+      "warning_count": 7
+    },
+    {
+      "apply_call_count": 1,
+      "case": 37,
+      "pending_command_count": 38,
+      "repeat_pending_command_count": 0,
+      "unsupported_count": 3,
+      "warning_count": 5
+    },
+    {
+      "apply_call_count": 1,
+      "case": 38,
+      "pending_command_count": 42,
+      "repeat_pending_command_count": 0,
+      "unsupported_count": 5,
+      "warning_count": 9
+    },
+    {
+      "apply_call_count": 1,
+      "case": 39,
+      "pending_command_count": 36,
+      "repeat_pending_command_count": 0,
+      "unsupported_count": 5,
+      "warning_count": 7
+    },
+    {
+      "apply_call_count": 1,
+      "case": 40,
+      "pending_command_count": 36,
+      "repeat_pending_command_count": 0,
+      "unsupported_count": 3,
+      "warning_count": 5
+    }
+  ],
+  "iterations": 40,
+  "maxCommandCount": 51,
+  "seed": 20260320,
+  "totalCommandCount": 1534,
+  "totalUnsupportedCount": 117,
+  "totalWarningCount": 235,
+  "artifactSet": "private/raw",
+  "publicSummary": true
+}

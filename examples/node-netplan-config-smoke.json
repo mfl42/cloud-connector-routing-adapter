@@ -1,0 +1,13 @@
+{
+  "apiVersion": "network.t-caas.telekom.com/v1alpha1",
+  "kind": "NodeNetplanConfig",
+  "metadata": {
+    "name": "vyos-lab-smoke",
+    "namespace": "default"
+  },
+  "spec": {
+    "nameservers": [
+      "192.0.2.53"
+    ]
+  }
+}
