@@ -268,11 +268,13 @@ or whitespace-only, making the models layer the primary rejection point.
 The outer `futures_wait` timeout is now `full_timeout + self.timeout`,
 removing the redundant `+5` constant.
 
-#### k8s_documents.py — only the first watch event per cycle is processed
+#### ~~k8s_documents.py — only the first watch event per cycle is processed~~ ✓
 
-`_watch_resource()` returns immediately after the first `ADDED`, `MODIFIED`,
-or `DELETED` event. If two CRDs change in rapid succession, the second event
-is not seen until the next watch cycle, increasing convergence lag.
+`_watch_resource()` now collects all events from the stream and returns a
+`list[WatchEvent]`. After the first change event, a 150 ms drain timer closes
+the stream so that events arriving in rapid succession are all captured in one
+cycle without blocking for the full `timeoutSeconds`. Callers updated to use
+`extend` instead of a single-event append.
 
 #### ~~k8s_status.py — token file read without error handling~~ ✓
 
