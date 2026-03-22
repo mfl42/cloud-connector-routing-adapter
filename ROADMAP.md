@@ -139,41 +139,39 @@ behaviour), P2 (unprotected edge case), P3 (design fragility).
 
 ---
 
-### P0 — Active bugs
+### P0 — Fixed
 
-#### translator.py — IndexError on empty port list
+#### ~~translator.py — IndexError on empty port list~~ (false positive)
 
-`traffic.source_ports[0]` and `traffic.destination_ports[0]` are accessed
-without a prior length check. `models.py` can return an empty list from
-`_string_list()`. If a policy route carries an empty ports list this raises
-`IndexError` and halts translation for the entire document.
+On analysis the access `traffic.source_ports[0]` is already guarded by
+`if traffic.source_ports:` on the preceding line. No fix required.
 
-#### k8s_documents.py — uncaught JSONDecodeError in watch loop
+#### k8s_documents.py — uncaught JSONDecodeError in watch loop ✓
 
-`json.loads(line)` in `_watch_resource` has no try/except. A single malformed
-line in the Kubernetes watch stream raises `JSONDecodeError` and crashes the
-watch for that resource kind until the controller restarts.
+`json.loads(line)` in `_watch_resource` now wraps the parse in a
+try/except JSONDecodeError. Malformed lines are skipped; the watch continues.
 
-#### state.py — mkdir not called for relative subdirectory paths
+#### state.py — mkdir not called for relative subdirectory paths ✓
 
-`save()` guards directory creation with
-`if state_path.parent != Path(".")`. A path like `./subdir/state.json` has
-`parent == Path(".")` so the condition is false and `mkdir()` is never called.
-Writing the temporary file then raises `FileNotFoundError`.
+The condition `if state_path.parent != Path(".")` was removed. `mkdir()` is
+now called unconditionally with `exist_ok=True`, which is a no-op when the
+directory already exists and correctly handles all path forms including
+relative subdirectory paths.
 
-#### k8s_status.py — TLS credential tempfiles never deleted
+#### k8s_status.py — TLS credential tempfiles never deleted ✓
 
-`_materialize_temp_file()` creates temporary files for certificates and keys
-with `delete=False`. These files are never removed. On long-running deployments
-or clusters with many nodes this leaks credential files on disk indefinitely.
+`_materialize_temp_file()` now appends each created path to a module-level
+list. An `atexit` handler calls `os.unlink()` on all tracked paths at process
+exit. Files that were already removed are silently ignored.
 
-#### reconcile.py — applied state updated on partial apply failure
+#### reconcile.py — applied state updated on partial apply failure ✓
 
-When `client.configure_commands()` returns `{"success": false, ...}` the
-reconcile loop still writes `applied_revision`, `applied_digest`, and
-`applied_commands` to state. The local state diverges from the actual VyOS
-configuration and subsequent reconcile cycles produce no diff, leaving the
-target permanently misconfigured.
+The apply section now reads `vyos_response.get("success", True)` before
+updating state. On failure: `last_result` is set to `"apply-failed"`,
+`last_error` records the VyOS error message, and `applied_revision`,
+`applied_digest`, and `applied_commands` are left unchanged. The document
+action in the run result is set to `"apply-failed"` so callers can distinguish
+a failed apply from a pending-apply or no-op.
 
 ---
 
