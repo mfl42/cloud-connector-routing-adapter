@@ -78,7 +78,10 @@ class ReconcileState:
         if not content:
             return cls()
 
-        raw = json.loads(content)
+        try:
+            raw = json.loads(content)
+        except json.JSONDecodeError:
+            return cls()
         documents = {
             key: DocumentState.from_dict(value)
             for key, value in (raw.get("documents") or {}).items()
@@ -143,7 +146,10 @@ class ReconcileState:
 def _int_or_none(value) -> int | None:
     if value in (None, ""):
         return None
-    return int(value)
+    try:
+        return int(value)
+    except (ValueError, TypeError):
+        return None
 
 
 def _utc_now() -> str:
