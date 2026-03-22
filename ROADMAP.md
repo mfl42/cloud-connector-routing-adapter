@@ -194,12 +194,12 @@ A value of `0` (disabled) is silently skipped.
 provided but all are invalid. The IPv4 default is only used when no prefixes
 are specified at all.
 
-#### translator.py — incorrect VyOS interface type for VLAN on non-ethernet base
+#### ~~translator.py — incorrect VyOS interface type for VLAN on non-ethernet base~~ ✓
 
-`_netplan_address_command()` falls back to `"ethernet"` when
-`_infer_interface_type()` returns `None` for an unknown base interface (e.g.
-`vxlan1.100`). The generated command targets `interfaces ethernet` instead of
-the correct type, producing no visible error but configuring nothing.
+`_netplan_interface_path()` (replacing `_netplan_address_command()`) now uses
+`_infer_interface_type()` with an `"ethernet"` fallback only, and applies the
+same logic for both VLAN sub-interfaces and plain interfaces. All address,
+MTU, DHCP, and route commands derive their type from the same helper.
 
 #### ~~translator.py — spurious "no table" warning for interface-only VRFs~~ ✓
 
@@ -329,28 +329,27 @@ or routing table (`set vrf` / `set table`). A direct next-hop action
 
 Current behaviour: `nextHop.address` present → warning, no command.
 
-#### Policy route: only the first protocol is used
+#### ~~Policy route: only the first protocol is used~~ ✓
 
-`trafficMatch.protocols` is a list but only the first recognised protocol is
-translated. Subsequent entries are silently dropped.
+`_translate_policy_route()` now iterates over all supported protocols and emits
+one VyOS rule per protocol (incrementing rule_id). Unsupported protocols are
+skipped; if all are unsupported the rule is omitted with a warning.
 
-Current behaviour: `["tcp", "udp"]` → only `tcp` is emitted.
+#### ~~Policy route: only the first port is used~~ ✓
 
-#### Policy route: only the first port is used
-
-`trafficMatch.sourcePorts` and `trafficMatch.destinationPorts` are lists but
-only index `[0]` is translated. Multiple port values or port ranges are
-silently dropped.
+`sourcePorts` and `destinationPorts` are now joined with commas
+(`",".join(...)`) and emitted as a single VyOS port value, which VyOS
+natively accepts as a comma-separated list.
 
 #### Static route: next-hop interface not mapped
 
 `staticRoute.nextHop` only reads `address`. A next-hop interface binding
 (`nextHop.interface` or equivalent) is not translated.
 
-#### BGP: peer password not mapped
+#### ~~BGP: peer password not mapped~~ ✓
 
-`password` / `peerPassword` on a BGP peer entry is not in the supported field
-set. It is silently absent from the generated commands.
+`password` / `peerPassword` / `bgpPassword` are now parsed into `BgpPeer.password`
+and emitted as `set ... neighbor '<addr>' password '<value>'`.
 
 #### BGP: route-map and prefix-list not mapped
 
@@ -359,43 +358,44 @@ filters (`prefixList`, `distributionList`), and community attributes are not
 in the supported peer field set. They are surfaced as unsupported fields on
 the peer.
 
-#### BGP: timers not mapped
+#### ~~BGP: timers not mapped~~ ✓
 
-`keepalive`, `holdtime`, and similar timer fields on BGP peers are not
-translated.
+`keepalive` and `holdtime` are parsed into `BgpPeer.keepalive` / `BgpPeer.holdtime`
+(also via a nested `timers` dict) and emitted together as
+`set ... timers keepalive` / `set ... timers holdtime`. If only one is present
+a warning is emitted and both are skipped (VyOS requires both to be set together).
 
-#### BGP: BFD and graceful-restart not mapped
+#### ~~BGP: BFD and graceful-restart not mapped~~ ✓
 
-`bfd` and `gracefulRestart` peer-level flags are not in the supported field
-set. They are surfaced as unsupported fields on the peer.
+`bfd` and `gracefulRestart` / `graceful-restart` are parsed into `BgpPeer.bfd`
+and `BgpPeer.graceful_restart` and emitted as leaf `set ... bfd` /
+`set ... graceful-restart` nodes.
 
-#### BGP: global router-id not mapped
+#### ~~BGP: global router-id not mapped~~ ✓
 
-There is no path in the current translation to emit
-`set vrf name 'X' protocols bgp parameters router-id`. Router-id is not read
-from the VRF spec.
+`routerId` / `router-id` / `bgpRouterId` are parsed into `VrfSpec.bgp_router_id`
+and emitted as `set vrf name '<n>' protocols bgp parameters router-id '<id>'`.
 
 ---
 
 ### Translation gaps — NodeNetplanConfig
 
-#### Interface family assumed to be ethernet
+#### ~~Interface family assumed to be ethernet~~ ✓
 
-`NodeNetplanConfig` address and route translation unconditionally emits
-`set interfaces ethernet <name> ...`. Bond (`bond*`), bridge (`br*`), dummy
-(`dum*`), and other non-ethernet families declared in netplan are not
-disambiguated. The correct VyOS interface type would not be selected.
+`_netplan_interface_path()` now calls `_infer_interface_type()` for both the
+base interface and VLAN sub-interfaces. All address, MTU, and DHCP commands
+use the inferred type (`bonding`, `bridge`, `dummy`, `wireguard`, etc.),
+falling back to `ethernet` only when the prefix is unrecognised.
 
-#### Interface MTU not mapped
+#### ~~Interface MTU not mapped~~ ✓
 
-`<interface>.mtu` is present in netplan semantics but is not read from the
-model or translated to `set interfaces <family> <name> mtu '<value>'`.
+`InterfaceConfig.mtu` is parsed from the spec dict and emitted as
+`set interfaces <family> <name> mtu '<value>'`.
 
-#### Interface route metric not mapped
+#### ~~Interface route metric not mapped~~ ✓
 
-`route.metric` is not read from `RouteConfig`. VyOS supports
-`set protocols static route '<prefix>' next-hop '<via>' distance '<metric>'`.
-All routes are currently applied without a metric.
+`RouteConfig.metric` is parsed and, when present, appended as
+`distance '<metric>'` to the static route next-hop command.
 
 #### Interface route on-link flag not mapped
 
@@ -403,11 +403,11 @@ All routes are currently applied without a metric.
 not translated. VyOS does not have a direct equivalent but the intent needs
 explicit handling.
 
-#### DHCP / dynamic address not mapped
+#### ~~DHCP / dynamic address not mapped~~ ✓
 
-`dhcp4` and `dhcp6` interface flags are not read from the model. Dynamic
-address assignment via `set interfaces <family> <name> address dhcp` is not
-emitted.
+`InterfaceConfig.dhcp4` and `InterfaceConfig.dhcp6` are parsed from the spec
+dict and emitted as `set interfaces <family> <name> address 'dhcp'` /
+`set interfaces <family> <name> address 'dhcp6'`.
 
 ---
 
@@ -431,6 +431,13 @@ re-attempt from a clean baseline.
 If the bound interface changes in a document update, the old binding is not
 explicitly removed before the new one is written. VyOS may retain both bindings
 depending on version behaviour.
+
+#### ~~Scalar leaf delete includes value — VyOS rejects path~~ ✓
+
+`_compute_diff_deletes()` now calls `_to_delete_path()` which strips the
+trailing value from known scalar leaf nodes (`table`, `system-as`, `router-id`,
+`remote-as`, `update-source`, `ebgp-multihop`, `password`, `timers keepalive`,
+`timers holdtime`). VyOS requires the path without a value for these nodes.
 
 #### No delete emitted for VRF table change
 
