@@ -117,6 +117,9 @@ class VyosTranslator:
 
     def _translate_vrf(self, vrf: VrfSpec) -> TranslationResult:
         result = TranslationResult()
+        if not vrf.name:
+            result.unsupported.append("vrf entry has an empty name; skipping")
+            return result
         if vrf.table is not None:
             result.commands.append(f"set vrf name '{vrf.name}' table '{vrf.table}'")
         elif vrf.static_routes or vrf.bgp_peers or vrf.policy_routes:
@@ -470,7 +473,6 @@ def _infer_interface_type(interface: str) -> str | None:
         ("br", "bridge"),
         ("pppoe", "pppoe"),
         ("dum", "dummy"),
-        ("lo", "loopback"),
         ("veth", "virtual-ethernet"),
         ("wg", "wireguard"),
         ("vti", "vti"),
