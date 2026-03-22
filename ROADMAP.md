@@ -131,6 +131,206 @@ passes the same instance to every reconcile call.
 
 ---
 
+## Known Bugs
+
+Bugs identified by static analysis of the current codebase. Grouped by
+severity: P0 (crash or guaranteed state corruption), P1 (silent incorrect
+behaviour), P2 (unprotected edge case), P3 (design fragility).
+
+---
+
+### P0 — Active bugs
+
+#### translator.py — IndexError on empty port list
+
+`traffic.source_ports[0]` and `traffic.destination_ports[0]` are accessed
+without a prior length check. `models.py` can return an empty list from
+`_string_list()`. If a policy route carries an empty ports list this raises
+`IndexError` and halts translation for the entire document.
+
+#### k8s_documents.py — uncaught JSONDecodeError in watch loop
+
+`json.loads(line)` in `_watch_resource` has no try/except. A single malformed
+line in the Kubernetes watch stream raises `JSONDecodeError` and crashes the
+watch for that resource kind until the controller restarts.
+
+#### state.py — mkdir not called for relative subdirectory paths
+
+`save()` guards directory creation with
+`if state_path.parent != Path(".")`. A path like `./subdir/state.json` has
+`parent == Path(".")` so the condition is false and `mkdir()` is never called.
+Writing the temporary file then raises `FileNotFoundError`.
+
+#### k8s_status.py — TLS credential tempfiles never deleted
+
+`_materialize_temp_file()` creates temporary files for certificates and keys
+with `delete=False`. These files are never removed. On long-running deployments
+or clusters with many nodes this leaks credential files on disk indefinitely.
+
+#### reconcile.py — applied state updated on partial apply failure
+
+When `client.configure_commands()` returns `{"success": false, ...}` the
+reconcile loop still writes `applied_revision`, `applied_digest`, and
+`applied_commands` to state. The local state diverges from the actual VyOS
+configuration and subsequent reconcile cycles produce no diff, leaving the
+target permanently misconfigured.
+
+---
+
+### P1 — Silent incorrect behaviour
+
+#### translator.py — policy route emitted without protocol filter on unknown protocol
+
+When `trafficMatch.protocols` contains only unrecognised values (e.g. `gre`,
+`esp`), `_first_protocol()` returns `None` and no protocol clause is emitted.
+The resulting policy rule matches all protocols on the specified interface,
+which can intercept unintended traffic.
+
+#### translator.py — ebgp-multihop 0 sent to VyOS
+
+`BgpPeer.ebgp_multihop` is emitted if `is not None`. A value of `0` generates
+`set ... ebgp-multihop '0'` which VyOS rejects at runtime, silently leaving
+the peer without a multihop setting after a failed commit.
+
+#### translator.py — policy-route IPv4 assumed when no valid prefix found
+
+`_policy_address_family()` returns `4` when no valid prefix is found in the
+source or destination lists. A policy route with only invalid or absent
+prefixes is silently treated as an IPv4 rule rather than being skipped.
+
+#### translator.py — incorrect VyOS interface type for VLAN on non-ethernet base
+
+`_netplan_address_command()` falls back to `"ethernet"` when
+`_infer_interface_type()` returns `None` for an unknown base interface (e.g.
+`vxlan1.100`). The generated command targets `interfaces ethernet` instead of
+the correct type, producing no visible error but configuring nothing.
+
+#### translator.py — spurious "no table" warning for interface-only VRFs
+
+The warning `vrf has no table; route programming may be incomplete` is emitted
+for every VRF that has no `table` field, including VRFs that only carry
+interface attachments where the table is not required.
+
+#### controller.py — raw dict comparison causes false-positive reconcile triggers
+
+`FileDocumentSource.wait_for_update()` compares documents using
+`document.raw != stored.raw`. Two semantically identical JSON objects with
+different key ordering are considered different. This triggers a reconcile cycle
+with no effective changes.
+
+#### controller.py — teardown exception aborts the reconcile cycle
+
+`teardown_documents()` is called outside any exception guard. A VyOS API error
+during teardown propagates and aborts the remainder of the reconcile iteration,
+leaving active documents unprocessed.
+
+#### state.py — corrupted state file raises unhandled exception
+
+`ReconcileState.load()` returns an empty state if the file is absent, but
+raises an unhandled `json.JSONDecodeError` if the file exists and is corrupted
+(e.g. truncated after a crash). The adapter cannot start until the file is
+manually removed.
+
+#### state.py — non-numeric field value in state file raises ValueError
+
+`_int_or_none()` calls `int(value)` without a try/except. A state file with a
+non-numeric string in an integer field (e.g. after manual editing) raises
+`ValueError` and prevents the adapter from loading any saved state.
+
+#### status.py — transition_time changes on every call when timestamps are absent
+
+`build_status_report()` falls back to `_utc_now()` when both `last_applied_at`
+and `last_seen_at` are `None`. Two successive calls to the same function on the
+same unchanged state produce different `transition_time` values in the exported
+status, which may confuse downstream consumers.
+
+#### reconcile.py — BGP delete consolidation regex misses quoted special characters
+
+The regex `r"^set (vrf name '[^']+' protocols bgp neighbor '[^']+')(?:\s|$)"`
+does not handle VRF names or neighbor addresses that contain an escaped single
+quote. Such commands are not consolidated and instead generate individual leaf
+deletes, which may leave VyOS with a partially configured neighbor after commit.
+
+---
+
+### P2 — Unprotected edge cases
+
+#### translator.py — loopback inferred but never emitted
+
+`_infer_interface_type()` returns `"loopback"` for interfaces starting with
+`lo`. `"loopback"` is not in `_vrf_interface_types` so it always produces an
+`unsupported` marker. The inferred type is misleading and could be replaced
+with a direct unsupported marker.
+
+#### models.py — empty VRF name accepted
+
+`VrfSpec.from_dict()` does not validate that `name` is non-empty. An empty
+string produces `set vrf name '' ...` commands that VyOS rejects at runtime.
+
+#### vyos_api.py — idempotent error detection is version-dependent
+
+`_is_idempotent_response()` matches on the literal strings `"already exists"`
+and `"is already defined"`. VyOS error messages vary across versions. A future
+version change could silently stop treating repeated applies as idempotent or,
+conversely, treat a real error as idempotent.
+
+#### vyos_api.py — show_config() is dead code
+
+`VyosApiClient.show_config()` is defined but never called anywhere in the
+adapter. It is either an unused stub or a missing call site.
+
+#### k8s_documents.py — futures_wait timeout is double-counted
+
+`futures_wait(timeout=full_timeout + self.timeout + 5)` adds the HTTP client
+timeout on top of the watch timeout. With default values this is
+`30 + 30 + 5 = 65` seconds. Under normal operation the watchers return well
+within `full_timeout`; the added headroom is larger than necessary and delays
+detection of hung threads.
+
+#### k8s_documents.py — only the first watch event per cycle is processed
+
+`_watch_resource()` returns immediately after the first `ADDED`, `MODIFIED`,
+or `DELETED` event. If two CRDs change in rapid succession, the second event
+is not seen until the next watch cycle, increasing convergence lag.
+
+#### k8s_status.py — token file read without error handling
+
+`Path(user_entry["tokenFile"]).read_text()` raises an unhandled exception if
+the token file is deleted or becomes unreadable between kubeconfig parsing and
+API use.
+
+#### controller.py — local import inside conditional block
+
+`from .status import write_status_report` is placed inside a conditional `if`
+block (the tombstone pruning path). An `ImportError` in this module would only
+be discovered at runtime when the specific condition is met, not at startup.
+
+---
+
+### P3 — Design fragility
+
+#### models.py / translator.py — validation boundary is split across two layers
+
+`models.py` accepts empty prefixes, missing next-hop addresses, and empty VRF
+names. `translator.py` re-validates all of these and emits warnings. The
+responsibility for input validation is duplicated and the adapter's actual
+acceptance boundary is only visible by reading both files together.
+
+#### models.py — protocol normalisation coupled to translator internals
+
+Protocols are normalised to lowercase with hyphens replaced by underscores
+(`tcp-udp` → `tcp_udp`) in `models.py`. `_first_protocol()` in `translator.py`
+expects exactly this form. The coupling is implicit and undocumented; a change
+to one side breaks the other without a type error.
+
+#### k8s_resources.py — CRD plural names are hardcoded
+
+`kind_to_plural()` contains two hardcoded entries. Adding support for a new
+CRD kind requires modifying this function directly. There is no registration
+mechanism or configuration path.
+
+---
+
 ## Planned
 
 Gaps are grouped by theme. Each entry names the affected field or component,
