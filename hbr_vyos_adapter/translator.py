@@ -119,7 +119,7 @@ class VyosTranslator:
         result = TranslationResult()
         if vrf.table is not None:
             result.commands.append(f"set vrf name '{vrf.name}' table '{vrf.table}'")
-        else:
+        elif vrf.static_routes or vrf.bgp_peers or vrf.policy_routes:
             result.warnings.append(f"vrf {vrf.name} has no table; route programming may be incomplete")
 
         if vrf.interfaces:
@@ -197,6 +197,16 @@ class VyosTranslator:
         policy_name = f"hbr-{vrf.name}"
         policy_root = "policy route6" if family == 6 else "policy route"
 
+        if traffic.protocols:
+            protocol = _first_protocol(traffic.protocols)
+            if not protocol:
+                result.warnings.append(
+                    f"policy route {policy_name} rule {rule_id} has no supported protocol; skipping rule"
+                )
+                return result
+        else:
+            protocol = None
+
         if traffic.interface:
             result.commands.append(
                 f"set {policy_root} '{policy_name}' interface '{traffic.interface}'"
@@ -225,14 +235,9 @@ class VyosTranslator:
                 f"set {policy_root} '{policy_name}' rule '{rule_id}' destination address '{prefix}'"
             )
 
-        protocol = _first_protocol(traffic.protocols)
         if protocol:
             result.commands.append(
                 f"set {policy_root} '{policy_name}' rule '{rule_id}' protocol '{protocol}'"
-            )
-        elif traffic.protocols:
-            result.warnings.append(
-                f"policy route {policy_name} rule {rule_id} has no supported protocol; skipping protocol match"
             )
         if traffic.source_ports:
             result.commands.append(
@@ -347,7 +352,7 @@ class VyosTranslator:
 
         if peer.update_source:
             result.commands.append(f"{peer_root} update-source '{peer.update_source}'")
-        if peer.ebgp_multihop is not None:
+        if peer.ebgp_multihop is not None and peer.ebgp_multihop > 0:
             result.commands.append(f"{peer_root} ebgp-multihop '{peer.ebgp_multihop}'")
 
         families, unknown_families = _normalized_bgp_address_families(peer.address_families)
@@ -441,11 +446,15 @@ def _policy_address_family(
     context: str,
 ) -> int | None:
     families: set[int] = set()
-    for prefix in [*source, *destination]:
+    all_prefixes = [*source, *destination]
+    for prefix in all_prefixes:
         family = _validated_prefix_family(prefix, warnings=warnings, context=f"{context} prefix {prefix!r}")
         if family is not None:
             families.add(family)
     if not families:
+        if all_prefixes:
+            warnings.append(f"{context} has no valid prefixes; skipping rule")
+            return None
         return 4
     if len(families) > 1:
         warnings.append(f"{context} mixes IPv4 and IPv6 prefixes; skipping rule")
