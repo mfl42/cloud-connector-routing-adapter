@@ -26,11 +26,18 @@ class Metadata:
 class NextHop:
     address: str | None = None
     vrf: str | None = None
+    interface: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "NextHop":
         data = _mapping_or_raise(data, "nextHop")
-        return cls(address=data.get("address"), vrf=data.get("vrf"))
+        return cls(
+            address=data.get("address"),
+            vrf=data.get("vrf"),
+            interface=_string_or_none(
+                _first_value(data, "interface", "dev", "outboundInterface")
+            ),
+        )
 
 
 @dataclass(slots=True)
