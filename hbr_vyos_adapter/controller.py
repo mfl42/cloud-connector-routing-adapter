@@ -19,6 +19,7 @@ from .reconcile import reconcile_documents
 from .reconcile import teardown_documents
 from .state import ReconcileState
 from .status import build_status_report
+from .status import write_status_report
 from .translator import VyosTranslator
 from .vyos_api import VyosApiClient
 
@@ -300,8 +301,6 @@ def run_controller(
                 state.save(state_file)
                 reconcile_result.status_report = build_status_report(state).to_dict()
                 if status_file:
-                    from .status import write_status_report
-
                     write_status_report(state, status_file)
 
             result.iterations.append(

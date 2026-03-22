@@ -258,7 +258,12 @@ def load_kube_connection(
     if resolved_token is None:
         resolved_token = user_entry.get("token")
     if resolved_token is None and "tokenFile" in user_entry:
-        resolved_token = Path(user_entry["tokenFile"]).expanduser().read_text().strip()
+        try:
+            resolved_token = Path(user_entry["tokenFile"]).expanduser().read_text().strip()
+        except OSError as exc:
+            raise RuntimeError(
+                f"failed to read token file {user_entry['tokenFile']!r}: {exc}"
+            ) from exc
 
     cluster_verify_tls = verify_tls and not cluster_entry.get("insecure-skip-tls-verify", False)
     return KubeConnection(
