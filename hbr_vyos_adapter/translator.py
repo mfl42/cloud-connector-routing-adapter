@@ -63,13 +63,24 @@ class VyosTranslator:
     def translate_node_netplan_config(self, document: NodeNetplanConfig) -> TranslationResult:
         result = TranslationResult()
         for iface in document.interfaces.values():
+            iface_path = _netplan_interface_path(iface.name)
+
+            if iface.mtu is not None:
+                result.commands.append(f"set {iface_path} mtu '{iface.mtu}'")
+
+            if iface.dhcp4:
+                result.commands.append(f"set {iface_path} address 'dhcp'")
+
+            if iface.dhcp6:
+                result.commands.append(f"set {iface_path} address 'dhcp6'")
+
             for address in iface.addresses:
                 if not _is_valid_interface_address(address):
                     result.warnings.append(
                         f"interface {iface.name} address {address!r} is invalid; skipping"
                     )
                     continue
-                result.commands.append(f"set interfaces ethernet {iface.name} address '{address}'")
+                result.commands.append(f"set {iface_path} address '{address}'")
 
             for route in iface.routes:
                 if not route.to or not route.via:
@@ -90,21 +101,16 @@ class VyosTranslator:
                         f"interface {iface.name} route via {route.via!r} is invalid; skipping"
                     )
                     continue
-                if route.to == "0.0.0.0/0":
+
+                metric_suffix = f" distance '{route.metric}'" if route.metric is not None else ""
+                proto = "route" if family == 4 else "route6"
+                if route.to in ("0.0.0.0/0", "::/0"):
                     result.commands.append(
-                        f"set protocols static route 0.0.0.0/0 next-hop '{route.via}'"
-                    )
-                elif route.to == "::/0":
-                    result.commands.append(
-                        f"set protocols static route6 ::/0 next-hop '{route.via}'"
-                    )
-                elif family == 4:
-                    result.commands.append(
-                        f"set protocols static route '{route.to}' next-hop '{route.via}'"
+                        f"set protocols static {proto} {route.to} next-hop '{route.via}'{metric_suffix}"
                     )
                 else:
                     result.commands.append(
-                        f"set protocols static route6 '{route.to}' next-hop '{route.via}'"
+                        f"set protocols static {proto} '{route.to}' next-hop '{route.via}'{metric_suffix}"
                     )
 
         for nameserver in document.nameservers:
@@ -117,9 +123,12 @@ class VyosTranslator:
 
     def _translate_vrf(self, vrf: VrfSpec) -> TranslationResult:
         result = TranslationResult()
+        if not vrf.name:
+            result.unsupported.append("vrf entry has an empty name; skipping")
+            return result
         if vrf.table is not None:
             result.commands.append(f"set vrf name '{vrf.name}' table '{vrf.table}'")
-        else:
+        elif vrf.static_routes or vrf.bgp_peers or vrf.policy_routes:
             result.warnings.append(f"vrf {vrf.name} has no table; route programming may be incomplete")
 
         if vrf.interfaces:
@@ -129,8 +138,10 @@ class VyosTranslator:
         for index, route in enumerate(vrf.static_routes, start=10):
             result.extend(self._translate_static_route(vrf, route, index))
 
-        for index, policy_route in enumerate(vrf.policy_routes, start=10):
-            result.extend(self._translate_policy_route(vrf, policy_route, index))
+        rule_id = 10
+        for policy_route in vrf.policy_routes:
+            pr_result, rule_id = self._translate_policy_route(vrf, policy_route, rule_id)
+            result.extend(pr_result)
 
         if vrf.bgp_peers:
             result.extend(self._translate_bgp(vrf))
@@ -142,8 +153,10 @@ class VyosTranslator:
         if not route.prefix:
             result.warnings.append(f"vrf {vrf.name} contains a static route without a prefix")
             return result
-        if not route.next_hop.address:
-            result.warnings.append(f"vrf {vrf.name} route {route.prefix} is missing next-hop address")
+        if not route.next_hop.address and not route.next_hop.interface:
+            result.warnings.append(
+                f"vrf {vrf.name} route {route.prefix} is missing next-hop address and interface"
+            )
             return result
         if vrf.table is None:
             result.warnings.append(f"vrf {vrf.name} route {route.prefix} skipped because vrf table is unset")
@@ -156,47 +169,60 @@ class VyosTranslator:
         )
         if family is None:
             return result
-        next_hop_family = _validated_ip_family(
-            route.next_hop.address,
-            warnings=result.warnings,
-            context=f"vrf {vrf.name} static route next-hop {route.next_hop.address!r}",
-        )
-        if next_hop_family is None:
-            return result
-        if next_hop_family != family:
-            result.warnings.append(
-                f"vrf {vrf.name} route {route.prefix} next-hop {route.next_hop.address} "
-                "uses a different address family; skipping"
+
+        proto = "route" if family == 4 else "route6"
+        route_path = f"set vrf name '{vrf.name}' protocols static {proto} '{route.prefix}'"
+
+        if route.next_hop.address:
+            next_hop_family = _validated_ip_family(
+                route.next_hop.address,
+                warnings=result.warnings,
+                context=f"vrf {vrf.name} static route next-hop {route.next_hop.address!r}",
             )
-            return result
-        if family == 4:
-            result.commands.append(
-                f"set vrf name '{vrf.name}' protocols static route '{route.prefix}' "
-                f"next-hop '{route.next_hop.address}'"
-            )
+            if next_hop_family is None:
+                return result
+            if next_hop_family != family:
+                result.warnings.append(
+                    f"vrf {vrf.name} route {route.prefix} next-hop {route.next_hop.address} "
+                    "uses a different address family; skipping"
+                )
+                return result
+            result.commands.append(f"{route_path} next-hop '{route.next_hop.address}'")
         else:
-            result.commands.append(
-                f"set vrf name '{vrf.name}' protocols static route6 '{route.prefix}' "
-                f"next-hop '{route.next_hop.address}'"
-            )
+            result.commands.append(f"{route_path} interface '{route.next_hop.interface}'")
+
         return result
 
     def _translate_policy_route(
-        self, vrf: VrfSpec, policy_route: PolicyRoute, rule_id: int
-    ) -> TranslationResult:
+        self, vrf: VrfSpec, policy_route: PolicyRoute, rule_id_start: int
+    ) -> tuple[TranslationResult, int]:
+        """Translate a policy route entry. Returns (result, next_available_rule_id)."""
         result = TranslationResult()
         traffic = policy_route.traffic_match
         family = _policy_address_family(
             traffic.source_prefixes,
             traffic.destination_prefixes,
             warnings=result.warnings,
-            context=f"policy route hbr-{vrf.name} rule {rule_id}",
+            context=f"policy route hbr-{vrf.name} rule {rule_id_start}",
         )
         if family is None:
-            return result
+            return result, rule_id_start + 1
+
         policy_name = f"hbr-{vrf.name}"
         policy_root = "policy route6" if family == 6 else "policy route"
 
+        # Resolve the set of protocols to emit — one rule per protocol.
+        supported_protocols: list[str] = [
+            p for p in traffic.protocols if p in _SUPPORTED_PROTOCOLS
+        ]
+        if traffic.protocols and not supported_protocols:
+            result.warnings.append(
+                f"policy route {policy_name} rule {rule_id_start} has no supported protocol; skipping rule"
+            )
+            return result, rule_id_start + 1
+        protocols_to_emit: list[str | None] = supported_protocols if supported_protocols else [None]
+
+        # Interface binding is per-policy-map, not per-rule.
         if traffic.interface:
             result.commands.append(
                 f"set {policy_root} '{policy_name}' interface '{traffic.interface}'"
@@ -205,6 +231,38 @@ class VyosTranslator:
             result.warnings.append(
                 f"policy route {policy_name} has no interface binding; emit rules only"
             )
+
+        if policy_route.next_hop.address:
+            result.warnings.append(
+                f"policy route {policy_name} rule {rule_id_start} carries next-hop "
+                f"{policy_route.next_hop.address}; this scaffold maps policy rules to tables/VRFs, "
+                "not direct next-hop actions"
+            )
+
+        # One VyOS rule per protocol (or one rule with no protocol filter).
+        next_rule_id = rule_id_start
+        for protocol in protocols_to_emit:
+            result.extend(
+                self._emit_policy_rule(
+                    vrf, policy_route, policy_name, policy_root, family, next_rule_id, protocol
+                )
+            )
+            next_rule_id += 1
+
+        return result, next_rule_id
+
+    def _emit_policy_rule(
+        self,
+        vrf: VrfSpec,
+        policy_route: PolicyRoute,
+        policy_name: str,
+        policy_root: str,
+        family: int,
+        rule_id: int,
+        protocol: str | None,
+    ) -> TranslationResult:
+        result = TranslationResult()
+        traffic = policy_route.traffic_match
 
         for prefix in _filter_prefixes_for_family(
             traffic.source_prefixes,
@@ -225,22 +283,19 @@ class VyosTranslator:
                 f"set {policy_root} '{policy_name}' rule '{rule_id}' destination address '{prefix}'"
             )
 
-        protocol = _first_protocol(traffic.protocols)
         if protocol:
             result.commands.append(
                 f"set {policy_root} '{policy_name}' rule '{rule_id}' protocol '{protocol}'"
             )
-        elif traffic.protocols:
-            result.warnings.append(
-                f"policy route {policy_name} rule {rule_id} has no supported protocol; skipping protocol match"
-            )
         if traffic.source_ports:
+            port_value = ",".join(str(p) for p in traffic.source_ports)
             result.commands.append(
-                f"set {policy_root} '{policy_name}' rule '{rule_id}' source port '{traffic.source_ports[0]}'"
+                f"set {policy_root} '{policy_name}' rule '{rule_id}' source port '{port_value}'"
             )
         if traffic.destination_ports:
+            port_value = ",".join(str(p) for p in traffic.destination_ports)
             result.commands.append(
-                f"set {policy_root} '{policy_name}' rule '{rule_id}' destination port '{traffic.destination_ports[0]}'"
+                f"set {policy_root} '{policy_name}' rule '{rule_id}' destination port '{port_value}'"
             )
 
         if policy_route.next_hop.vrf:
@@ -256,17 +311,35 @@ class VyosTranslator:
                 f"policy route {policy_name} rule {rule_id} cannot resolve target table or target VRF"
             )
 
-        if policy_route.next_hop.address:
-            result.warnings.append(
-                f"policy route {policy_name} rule {rule_id} carries next-hop "
-                f"{policy_route.next_hop.address}; this scaffold maps policy rules to tables/VRFs, "
-                "not direct next-hop actions"
-            )
-
         return result
 
     def _translate_vrf_interface(self, vrf_name: str, interface: str) -> TranslationResult:
         result = TranslationResult()
+
+        if "." in interface:
+            base, _, vlan_id = interface.partition(".")
+            if not vlan_id.isdigit():
+                result.unsupported.append(
+                    f"vrf {vrf_name} interface {interface} has a non-numeric VLAN id"
+                )
+                return result
+            base_type = _infer_interface_type(base)
+            if base_type is None:
+                result.unsupported.append(
+                    f"vrf {vrf_name} interface {interface} base {base!r} uses an unknown interface family"
+                )
+                return result
+            if base_type not in self._vrf_interface_types:
+                result.unsupported.append(
+                    f"vrf {vrf_name} interface {interface} base {base!r} is inferred as {base_type}, "
+                    "which is not in the supported attachment list for this scaffold"
+                )
+                return result
+            result.commands.append(
+                f"set interfaces {base_type} {base} vif '{vlan_id}' vrf '{vrf_name}'"
+            )
+            return result
+
         interface_type = _infer_interface_type(interface)
         if interface_type is None:
             result.unsupported.append(
@@ -297,6 +370,9 @@ class VyosTranslator:
         bgp_root = f"set vrf name '{vrf.name}' protocols bgp"
         result.commands.append(f"{bgp_root} system-as '{vrf.bgp_system_as}'")
 
+        if vrf.bgp_router_id:
+            result.commands.append(f"{bgp_root} parameters router-id '{vrf.bgp_router_id}'")
+
         for peer in vrf.bgp_peers:
             result.extend(self._translate_bgp_peer(vrf.name, bgp_root, peer))
 
@@ -322,8 +398,22 @@ class VyosTranslator:
 
         if peer.update_source:
             result.commands.append(f"{peer_root} update-source '{peer.update_source}'")
-        if peer.ebgp_multihop is not None:
+        if peer.ebgp_multihop is not None and peer.ebgp_multihop > 0:
             result.commands.append(f"{peer_root} ebgp-multihop '{peer.ebgp_multihop}'")
+        if peer.password:
+            result.commands.append(f"{peer_root} password '{peer.password}'")
+        if peer.keepalive is not None and peer.holdtime is not None:
+            result.commands.append(f"{peer_root} timers keepalive '{peer.keepalive}'")
+            result.commands.append(f"{peer_root} timers holdtime '{peer.holdtime}'")
+        elif peer.keepalive is not None or peer.holdtime is not None:
+            result.warnings.append(
+                f"vrf {vrf_name} BGP peer {peer.address} has only one of keepalive/holdtime; "
+                "both must be set together — skipping timers"
+            )
+        if peer.bfd:
+            result.commands.append(f"{peer_root} bfd")
+        if peer.graceful_restart:
+            result.commands.append(f"{peer_root} graceful-restart")
 
         families, unknown_families = _normalized_bgp_address_families(peer.address_families)
         if unknown_families:
@@ -371,6 +461,18 @@ class VyosTranslator:
                 "ebgpMultihop",
                 "ebgp-multihop",
                 "multihop",
+                "password",
+                "peerPassword",
+                "bgpPassword",
+                "keepalive",
+                "keepAlive",
+                "holdtime",
+                "holdTime",
+                "hold-time",
+                "timers",
+                "bfd",
+                "gracefulRestart",
+                "graceful-restart",
                 "addressFamilies",
                 "addressFamily",
                 "address_families",
@@ -396,10 +498,16 @@ def _iter_vrfs(document: NodeNetworkConfig) -> list[VrfSpec]:
     return vrfs
 
 
+# Protocols accepted by VyOS policy route rules.
+# models.py normalises raw protocol strings to lowercase with hyphens replaced
+# by underscores before storing them (e.g. "tcp-udp" → "tcp_udp"). The values
+# here must match that normalised form exactly.
+_SUPPORTED_PROTOCOLS: frozenset[str] = frozenset({"tcp", "udp", "tcp_udp", "icmp", "icmpv6"})
+
+
 def _first_protocol(protocols: list[str]) -> str | None:
-    supported = {"tcp", "udp", "tcp_udp", "icmp", "icmpv6"}
     for protocol in protocols:
-        if protocol in supported:
+        if protocol in _SUPPORTED_PROTOCOLS:
             return protocol
     return None
 
@@ -416,11 +524,15 @@ def _policy_address_family(
     context: str,
 ) -> int | None:
     families: set[int] = set()
-    for prefix in [*source, *destination]:
+    all_prefixes = [*source, *destination]
+    for prefix in all_prefixes:
         family = _validated_prefix_family(prefix, warnings=warnings, context=f"{context} prefix {prefix!r}")
         if family is not None:
             families.add(family)
     if not families:
+        if all_prefixes:
+            warnings.append(f"{context} has no valid prefixes; skipping rule")
+            return None
         return 4
     if len(families) > 1:
         warnings.append(f"{context} mixes IPv4 and IPv6 prefixes; skipping rule")
@@ -436,7 +548,6 @@ def _infer_interface_type(interface: str) -> str | None:
         ("br", "bridge"),
         ("pppoe", "pppoe"),
         ("dum", "dummy"),
-        ("lo", "loopback"),
         ("veth", "virtual-ethernet"),
         ("wg", "wireguard"),
         ("vti", "vti"),
@@ -520,6 +631,17 @@ def _filter_prefixes_for_family(
             continue
         valid.append(prefix)
     return valid
+
+
+def _netplan_interface_path(interface: str) -> str:
+    """Return the VyOS path prefix for an interface, handling VLAN subinterfaces."""
+    if "." in interface:
+        base, _, vlan_id = interface.partition(".")
+        if vlan_id.isdigit():
+            base_type = _infer_interface_type(base) or "ethernet"
+            return f"interfaces {base_type} {base} vif '{vlan_id}'"
+    iface_type = _infer_interface_type(interface) or "ethernet"
+    return f"interfaces {iface_type} {interface}"
 
 
 def _is_valid_interface_address(value: str) -> bool:

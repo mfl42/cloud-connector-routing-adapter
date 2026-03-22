@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import atexit
 import base64
 import json
+import os
 import time
 from dataclasses import dataclass
 from dataclasses import field
@@ -256,7 +258,12 @@ def load_kube_connection(
     if resolved_token is None:
         resolved_token = user_entry.get("token")
     if resolved_token is None and "tokenFile" in user_entry:
-        resolved_token = Path(user_entry["tokenFile"]).expanduser().read_text().strip()
+        try:
+            resolved_token = Path(user_entry["tokenFile"]).expanduser().read_text().strip()
+        except OSError as exc:
+            raise RuntimeError(
+                f"failed to read token file {user_entry['tokenFile']!r}: {exc}"
+            ) from exc
 
     cluster_verify_tls = verify_tls and not cluster_entry.get("insecure-skip-tls-verify", False)
     return KubeConnection(
@@ -332,11 +339,26 @@ def _lookup_named(items: list[dict[str, Any]], name: str) -> dict[str, Any]:
     raise ValueError(f"unable to find kubeconfig entry {name!r}")
 
 
+_temp_files: list[str] = []
+
+
+def _cleanup_temp_files() -> None:
+    for path in _temp_files:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
+atexit.register(_cleanup_temp_files)
+
+
 def _materialize_temp_file(content: bytes) -> str:
     handle = NamedTemporaryFile(delete=False)
     handle.write(content)
     handle.flush()
     handle.close()
+    _temp_files.append(handle.name)
     return handle.name
 
 

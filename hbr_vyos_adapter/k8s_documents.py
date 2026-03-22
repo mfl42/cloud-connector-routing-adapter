@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import time
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import wait as futures_wait
 from dataclasses import dataclass
 from dataclasses import field
 
@@ -78,15 +80,17 @@ class KubeDocumentClient:
         if not resources:
             return WatchResult(changed=False, resource_versions=dict(resource_versions))
 
-        per_resource_timeout = max(1, int(timeout_seconds / len(resources)))
+        full_timeout = max(1, int(timeout_seconds))
         latest_versions = dict(resource_versions)
-        for resource in resources:
+
+        if len(resources) == 1:
+            resource = resources[0]
             changed, latest_version, relist_required, event = self._watch_resource(
                 resource,
                 resource_version=latest_versions.get(resource.kind),
                 namespace=namespace,
                 cluster_scoped=cluster_scoped,
-                timeout_seconds=per_resource_timeout,
+                timeout_seconds=full_timeout,
             )
             if latest_version is not None:
                 latest_versions[resource.kind] = latest_version
@@ -105,7 +109,57 @@ class KubeDocumentClient:
                     resource_versions=latest_versions,
                     events=[event] if event else [],
                 )
+            return WatchResult(changed=False, resource_versions=latest_versions)
 
+        with ThreadPoolExecutor(max_workers=len(resources)) as pool:
+            future_to_resource = {
+                pool.submit(
+                    self._watch_resource,
+                    resource,
+                    resource_version=latest_versions.get(resource.kind),
+                    namespace=namespace,
+                    cluster_scoped=cluster_scoped,
+                    timeout_seconds=full_timeout,
+                ): resource
+                for resource in resources
+            }
+            done, pending = futures_wait(
+                future_to_resource,
+                timeout=full_timeout + self.timeout,
+            )
+            for f in pending:
+                f.cancel()
+
+        all_events: list[WatchEvent] = []
+        any_changed = False
+        relist_found = False
+        for future in done:
+            resource = future_to_resource[future]
+            changed, latest_version, relist_required, event = future.result()
+            if latest_version is not None:
+                latest_versions[resource.kind] = latest_version
+            elif relist_required:
+                latest_versions[resource.kind] = ""
+            if event:
+                all_events.append(event)
+            if relist_required:
+                relist_found = True
+            if changed:
+                any_changed = True
+
+        if relist_found:
+            return WatchResult(
+                changed=True,
+                relist_required=True,
+                resource_versions=latest_versions,
+                events=all_events,
+            )
+        if any_changed:
+            return WatchResult(
+                changed=True,
+                resource_versions=latest_versions,
+                events=all_events,
+            )
         return WatchResult(changed=False, resource_versions=latest_versions)
 
     def _watch_resource(
@@ -166,7 +220,10 @@ class KubeDocumentClient:
         for line in response.iter_lines(decode_unicode=True):
             if not line:
                 continue
-            payload = json.loads(line)
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
             event_type = payload.get("type")
             if event_type == "ERROR":
                 if _is_stale_watch_event(payload):

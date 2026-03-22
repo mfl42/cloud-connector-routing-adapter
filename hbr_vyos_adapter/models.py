@@ -26,11 +26,18 @@ class Metadata:
 class NextHop:
     address: str | None = None
     vrf: str | None = None
+    interface: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "NextHop":
         data = _mapping_or_raise(data, "nextHop")
-        return cls(address=data.get("address"), vrf=data.get("vrf"))
+        return cls(
+            address=data.get("address"),
+            vrf=data.get("vrf"),
+            interface=_string_or_none(
+                _first_value(data, "interface", "dev", "outboundInterface")
+            ),
+        )
 
 
 @dataclass(slots=True)
@@ -75,6 +82,8 @@ class TrafficMatch:
                 or destination.get("ports")
                 or destination.get("port")
             ),
+            # Normalise to lowercase with underscores. translator._SUPPORTED_PROTOCOLS
+            # must match this canonical form (e.g. "tcp-udp" → "tcp_udp").
             protocols=[str(item).lower().replace("-", "_") for item in protocols],
             interface=data.get("interface") or data.get("inboundInterface"),
         )
@@ -114,12 +123,18 @@ class BgpPeer:
     remote_as: str | None = None
     update_source: str | None = None
     ebgp_multihop: int | None = None
+    password: str | None = None
+    keepalive: int | None = None
+    holdtime: int | None = None
+    bfd: bool = False
+    graceful_restart: bool = False
     address_families: list[str] = field(default_factory=list)
     raw: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "BgpPeer":
         data = _mapping_or_raise(data, "bgpPeer")
+        timers = _mapping_or_raise(data.get("timers"), "bgpPeer.timers", allow_none=True)
         return cls(
             address=_string_or_none(
                 _first_value(
@@ -149,6 +164,24 @@ class BgpPeer:
             ebgp_multihop=_int_or_none(
                 _first_value(data, "ebgpMultihop", "ebgp-multihop", "multihop")
             ),
+            password=_string_or_none(
+                _first_value(data, "password", "peerPassword", "bgpPassword")
+            ),
+            keepalive=_int_or_none(
+                _first_value(data, "keepalive", "keepAlive")
+                or timers.get("keepalive")
+                or timers.get("keepAlive")
+            ),
+            holdtime=_int_or_none(
+                _first_value(data, "holdtime", "holdTime", "hold-time")
+                or timers.get("holdtime")
+                or timers.get("holdTime")
+                or timers.get("hold-time")
+            ),
+            bfd=bool(data.get("bfd", False)),
+            graceful_restart=bool(
+                _first_value(data, "gracefulRestart", "graceful-restart") or False
+            ),
             address_families=_string_list(
                 _first_value(
                     data,
@@ -168,6 +201,7 @@ class VrfSpec:
     name: str
     table: int | None = None
     bgp_system_as: str | None = None
+    bgp_router_id: str | None = None
     bgp_peers: list[BgpPeer] = field(default_factory=list)
     interfaces: list[str] = field(default_factory=list)
     policy_routes: list[PolicyRoute] = field(default_factory=list)
@@ -176,6 +210,8 @@ class VrfSpec:
 
     @classmethod
     def from_dict(cls, name: str, data: dict[str, Any]) -> "VrfSpec":
+        if not name or not name.strip():
+            raise ValueError("VRF name must be a non-empty string")
         data = _mapping_or_raise(data, f"vrf {name}")
         bgp_data = _mapping_or_raise(data.get("bgp"), f"vrf {name}.bgp", allow_none=True)
         bgp_system_as = _string_or_none(
@@ -202,10 +238,16 @@ class VrfSpec:
         if bgp_peers_raw is None:
             bgp_peers_raw = _first_value(bgp_data, "peers", "neighbors")
 
+        bgp_router_id = _string_or_none(
+            _first_value(data, "routerId", "router-id", "bgpRouterId")
+            or _first_value(bgp_data, "routerId", "router-id", "routerID")
+        )
+
         return cls(
             name=name,
             table=_int_or_none(data.get("table")),
             bgp_system_as=bgp_system_as,
+            bgp_router_id=bgp_router_id,
             bgp_peers=_bgp_peers_from_raw(bgp_peers_raw),
             interfaces=_string_list(data.get("interfaces")),
             policy_routes=[
@@ -277,11 +319,16 @@ class NodeNetworkConfig:
 class RouteConfig:
     to: str
     via: str | None = None
+    metric: int | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "RouteConfig":
         data = _mapping_or_raise(data, "route")
-        return cls(to=data.get("to", ""), via=data.get("via"))
+        return cls(
+            to=data.get("to", ""),
+            via=data.get("via"),
+            metric=_int_or_none(data.get("metric")),
+        )
 
 
 @dataclass(slots=True)
@@ -289,6 +336,9 @@ class InterfaceConfig:
     name: str
     addresses: list[str] = field(default_factory=list)
     routes: list[RouteConfig] = field(default_factory=list)
+    mtu: int | None = None
+    dhcp4: bool = False
+    dhcp6: bool = False
 
     @classmethod
     def from_dict(cls, name: str, data: dict[str, Any]) -> "InterfaceConfig":
@@ -300,6 +350,9 @@ class InterfaceConfig:
                 RouteConfig.from_dict(item)
                 for item in _list_or_raise(data.get("routes"), f"interface {name}.routes")
             ],
+            mtu=_int_or_none(data.get("mtu")),
+            dhcp4=bool(data.get("dhcp4", False)),
+            dhcp6=bool(data.get("dhcp6", False)),
         )
 
 

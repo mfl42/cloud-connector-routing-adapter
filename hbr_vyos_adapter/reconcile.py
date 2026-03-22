@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from dataclasses import asdict
 from dataclasses import dataclass
 from dataclasses import field
@@ -81,7 +82,7 @@ def reconcile_documents(
     now = _utc_now()
     doc_results: list[DocumentReconcileResult] = []
     pending_commands: list[str] = []
-    pending_states: list[tuple[str, str, str]] = []
+    pending_states: list[tuple[str, str, str, list[str]]] = []
 
     for document in documents:
         translated = translator.translate(document)
@@ -120,8 +121,11 @@ def reconcile_documents(
 
         if changed:
             if commands_changed:
+                old_cmds = set(existing.applied_commands) if existing else set()
+                new_cmds = set(translated.commands)
+                pending_commands.extend(_compute_diff_deletes(old_cmds - new_cmds, new_cmds))
                 pending_commands.extend(translated.commands)
-            pending_states.append((key, desired_revision, desired_digest))
+            pending_states.append((key, desired_revision, desired_digest, translated.commands))
 
         doc_results.append(
             DocumentReconcileResult(
@@ -150,26 +154,41 @@ def reconcile_documents(
     apply_performed = False
     vyos_response: dict | None = None
     if apply and pending_states:
+        apply_succeeded = True
         if pending_commands:
             if client is None:
                 raise ValueError("apply=True requires a VyosApiClient when commands must be sent")
             vyos_response = client.configure_commands(pending_commands)
             apply_performed = True
-        applied_at = _utc_now()
-        for key, desired_revision, desired_digest in pending_states:
-            entry = state.documents[key]
-            entry.applied_revision = desired_revision
-            entry.applied_digest = desired_digest
-            entry.last_applied_at = applied_at
-            entry.last_result = "applied"
-            entry.last_error = None
+            apply_succeeded = vyos_response.get("success", True)
 
-        for item in doc_results:
-            if item.changed:
-                item.applied_revision = item.desired_revision
-                item.applied_digest = item.desired_digest
-                item.in_sync = True
-                item.action = "applied"
+        if apply_succeeded:
+            applied_at = _utc_now()
+            for key, desired_revision, desired_digest, desired_commands in pending_states:
+                entry = state.documents[key]
+                entry.applied_revision = desired_revision
+                entry.applied_digest = desired_digest
+                entry.applied_commands = desired_commands
+                entry.last_applied_at = applied_at
+                entry.last_result = "applied"
+                entry.last_error = None
+
+            for item in doc_results:
+                if item.changed:
+                    item.applied_revision = item.desired_revision
+                    item.applied_digest = item.desired_digest
+                    item.in_sync = True
+                    item.action = "applied"
+        else:
+            error_msg = str(vyos_response.get("error") or "VyOS apply failed")
+            for key, _, _, _ in pending_states:
+                entry = state.documents[key]
+                entry.last_result = "apply-failed"
+                entry.last_error = error_msg
+
+            for item in doc_results:
+                if item.changed:
+                    item.action = "apply-failed"
 
     state.save(state_file)
     if status_file:
@@ -188,6 +207,86 @@ def reconcile_documents(
     )
 
 
+def teardown_documents(
+    keys: set[str],
+    state: ReconcileState,
+    state_file: str,
+    *,
+    client: VyosApiClient | None = None,
+) -> list[str]:
+    """Generate and optionally apply VyOS delete commands for fully removed documents."""
+    teardown_commands: list[str] = []
+    for key in sorted(keys):
+        doc = state.documents.get(key)
+        if doc is None or not doc.applied_commands:
+            continue
+        teardown_commands.extend(_invert_for_teardown(doc.applied_commands))
+
+    if teardown_commands and client is not None:
+        client.configure_commands(teardown_commands)
+
+    torn_down_at = _utc_now()
+    for key in sorted(keys):
+        doc = state.documents.get(key)
+        if doc is None:
+            continue
+        doc.applied_commands = []
+        doc.applied_revision = None
+        doc.applied_digest = None
+        doc.last_result = "torn-down"
+        doc.last_applied_at = torn_down_at
+
+    state.save(state_file)
+    return teardown_commands
+
+
+def _invert_for_teardown(commands: list[str]) -> list[str]:
+    """Derive minimal coarse-grained VyOS delete commands from a set of applied set commands.
+
+    VRF blocks, policy route maps, and interface VRF attachments are collapsed into
+    single top-level deletes. Everything else (netplan addresses, nameservers, plain
+    static routes) gets a fine-grained delete that preserves the original quoting.
+    """
+    vrf_names: set[str] = set()
+    policy_maps: set[str] = set()
+    interface_vrfs: set[str] = set()
+    fine_deletes: list[str] = []
+
+    for cmd in commands:
+        m = re.match(r"^set (vrf name '[^']+')(\s|$)", cmd)
+        if m:
+            vrf_names.add(m.group(1))
+            continue
+
+        m = re.match(r"^set (policy route6? '[^']+')(\s|$)", cmd)
+        if m:
+            policy_maps.add(m.group(1))
+            continue
+
+        m = re.match(r"^set (interfaces \w+ \S+ vif '[^']+') vrf ", cmd)
+        if m:
+            interface_vrfs.add(m.group(1) + " vrf")
+            continue
+
+        m = re.match(r"^set (interfaces \w+ \S+) vrf ", cmd)
+        if m:
+            interface_vrfs.add(m.group(1) + " vrf")
+            continue
+
+        if cmd.startswith("set "):
+            fine_deletes.append("delete " + cmd[4:])
+
+    deletes: list[str] = []
+    for item in sorted(vrf_names):
+        deletes.append(f"delete {item}")
+    for item in sorted(policy_maps):
+        deletes.append(f"delete {item}")
+    for item in sorted(interface_vrfs):
+        deletes.append(f"delete {item}")
+    deletes.extend(fine_deletes)
+    return deletes
+
+
 def _document_key(document: NodeNetworkConfig | NodeNetplanConfig) -> str:
     namespace = document.metadata.namespace or "default"
     return f"{document.kind}:{namespace}/{document.metadata.name}"
@@ -199,6 +298,70 @@ def _desired_revision(
     if isinstance(document, NodeNetworkConfig) and document.revision:
         return document.revision
     return f"digest-{_commands_digest(commands)[:12]}"
+
+
+_BGP_NEIGHBOR_RE = re.compile(
+    r"^set (vrf name '[^']+' protocols bgp neighbor '[^']+')(?:\s|$)"
+)
+
+
+def _compute_diff_deletes(removed_cmds: set[str], new_cmds: set[str]) -> list[str]:
+    """Generate VyOS delete commands for removed commands.
+
+    BGP neighbors that are entirely removed are collapsed into a single coarse
+    ``delete ... neighbor 'addr'`` to avoid leaving VyOS with an incomplete
+    neighbor config after a partial leaf delete.
+    """
+    neighbor_prefixes: dict[str, list[str]] = {}
+    for cmd in removed_cmds:
+        m = _BGP_NEIGHBOR_RE.match(cmd)
+        if m:
+            neighbor_prefixes.setdefault(m.group(1), []).append(cmd)
+
+    coarse: list[str] = []
+    absorbed: set[str] = set()
+    for prefix, cmds in sorted(neighbor_prefixes.items()):
+        if not any(c.startswith(f"set {prefix}") for c in new_cmds):
+            coarse.append(f"delete {prefix}")
+            absorbed.update(cmds)
+
+    fine = sorted(
+        _to_delete_path(cmd)
+        for cmd in removed_cmds - absorbed
+        if cmd.startswith("set ")
+    )
+    return coarse + fine
+
+
+# Scalar leaf nodes whose value must be stripped when generating a delete
+# command — specifying the value in a VyOS delete path is not valid for these.
+_SCALAR_LEAF_RE = re.compile(
+    r"^set ("
+    r"vrf name '[^']+' table"
+    r"|vrf name '[^']+' protocols bgp system-as"
+    r"|vrf name '[^']+' protocols bgp parameters router-id"
+    r"|vrf name '[^']+' protocols bgp neighbor '[^']+' remote-as"
+    r"|vrf name '[^']+' protocols bgp neighbor '[^']+' update-source"
+    r"|vrf name '[^']+' protocols bgp neighbor '[^']+' ebgp-multihop"
+    r"|vrf name '[^']+' protocols bgp neighbor '[^']+' password"
+    r"|vrf name '[^']+' protocols bgp neighbor '[^']+' timers keepalive"
+    r"|vrf name '[^']+' protocols bgp neighbor '[^']+' timers holdtime"
+    r") '[^']+'\s*$"
+)
+
+
+def _to_delete_path(cmd: str) -> str:
+    """Convert a set command to the correct VyOS delete path.
+
+    For scalar leaf nodes (e.g. table, system-as) the trailing value must be
+    stripped because VyOS does not accept a value in the delete path for those
+    nodes.  For list-key nodes (e.g. next-hop address, route prefix) the full
+    path including the key value is correct and is preserved.
+    """
+    m = _SCALAR_LEAF_RE.match(cmd)
+    if m:
+        return f"delete {m.group(1)}"
+    return "delete " + cmd[4:]
 
 
 def _commands_digest(commands: list[str]) -> str:
