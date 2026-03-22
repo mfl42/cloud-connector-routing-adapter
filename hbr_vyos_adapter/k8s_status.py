@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import atexit
 import base64
 import json
+import os
 import time
 from dataclasses import dataclass
 from dataclasses import field
@@ -332,11 +334,26 @@ def _lookup_named(items: list[dict[str, Any]], name: str) -> dict[str, Any]:
     raise ValueError(f"unable to find kubeconfig entry {name!r}")
 
 
+_temp_files: list[str] = []
+
+
+def _cleanup_temp_files() -> None:
+    for path in _temp_files:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
+atexit.register(_cleanup_temp_files)
+
+
 def _materialize_temp_file(content: bytes) -> str:
     handle = NamedTemporaryFile(delete=False)
     handle.write(content)
     handle.flush()
     handle.close()
+    _temp_files.append(handle.name)
     return handle.name
 
 
