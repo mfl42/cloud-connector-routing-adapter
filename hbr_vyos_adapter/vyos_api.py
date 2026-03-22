@@ -27,9 +27,6 @@ class VyosApiClient:
                 "operations": responses,
             }
 
-    def show_config(self) -> dict:
-        return self._post("/retrieve", {"op": "showConfig", "path": []})
-
     def _build_operation(self, command: str) -> dict:
         tokens = shlex.split(command)
         if not tokens:
@@ -94,7 +91,12 @@ class VyosApiClient:
 
 def _is_idempotent_response(body: dict) -> bool:
     error = str(body.get("error") or "").lower()
-    return "already exists" in error or "is already defined" in error
+    return (
+        "already exists" in error
+        or "is already defined" in error
+        or "already set" in error
+        or "is already present" in error
+    )
 
 
 def _json_dump(data: dict) -> str:

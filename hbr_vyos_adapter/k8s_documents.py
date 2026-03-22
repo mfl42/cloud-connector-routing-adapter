@@ -125,7 +125,7 @@ class KubeDocumentClient:
             }
             done, pending = futures_wait(
                 future_to_resource,
-                timeout=full_timeout + self.timeout + 5,
+                timeout=full_timeout + self.timeout,
             )
             for f in pending:
                 f.cancel()
