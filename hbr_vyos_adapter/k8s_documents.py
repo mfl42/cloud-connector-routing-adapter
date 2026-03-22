@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import wait as futures_wait
@@ -85,7 +86,7 @@ class KubeDocumentClient:
 
         if len(resources) == 1:
             resource = resources[0]
-            changed, latest_version, relist_required, event = self._watch_resource(
+            changed, latest_version, relist_required, events = self._watch_resource(
                 resource,
                 resource_version=latest_versions.get(resource.kind),
                 namespace=namespace,
@@ -101,13 +102,13 @@ class KubeDocumentClient:
                     changed=True,
                     relist_required=True,
                     resource_versions=latest_versions,
-                    events=[event] if event else [],
+                    events=events,
                 )
             if changed:
                 return WatchResult(
                     changed=True,
                     resource_versions=latest_versions,
-                    events=[event] if event else [],
+                    events=events,
                 )
             return WatchResult(changed=False, resource_versions=latest_versions)
 
@@ -135,13 +136,12 @@ class KubeDocumentClient:
         relist_found = False
         for future in done:
             resource = future_to_resource[future]
-            changed, latest_version, relist_required, event = future.result()
+            changed, latest_version, relist_required, events = future.result()
             if latest_version is not None:
                 latest_versions[resource.kind] = latest_version
             elif relist_required:
                 latest_versions[resource.kind] = ""
-            if event:
-                all_events.append(event)
+            all_events.extend(events)
             if relist_required:
                 relist_found = True
             if changed:
@@ -170,7 +170,7 @@ class KubeDocumentClient:
         namespace: str | None,
         cluster_scoped: bool,
         timeout_seconds: int,
-    ) -> tuple[bool, str | None, bool, WatchEvent | None]:
+    ) -> tuple[bool, str | None, bool, list[WatchEvent]]:
         import requests
 
         attempt = 0
@@ -204,11 +204,11 @@ class KubeDocumentClient:
 
             status_code = getattr(response, "status_code", 200)
             if status_code == 410:
-                return True, None, True, WatchEvent(
+                return True, None, True, [WatchEvent(
                     kind=resource.kind,
                     event_type="ERROR",
                     relist_required=True,
-                )
+                )]
             if status_code >= 400:
                 if attempt >= self.watch_retry_attempts:
                     _raise_http_error(response, resource.kind)
@@ -216,42 +216,71 @@ class KubeDocumentClient:
                 continue
             break
 
-        latest_version = resource_version
-        for line in response.iter_lines(decode_unicode=True):
-            if not line:
-                continue
+        # After the first change event is seen, close the stream after a short
+        # drain window so that events arriving in rapid succession are all
+        # captured in one watch cycle without blocking for the full timeout.
+        _DRAIN_DELAY_SECONDS = 0.15
+        drain_fired = threading.Event()
+        drain_timer: threading.Timer | None = None
+
+        def _fire_drain() -> None:
+            drain_fired.set()
             try:
-                payload = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            event_type = payload.get("type")
-            if event_type == "ERROR":
-                if _is_stale_watch_event(payload):
-                    return True, None, True, WatchEvent(
-                        kind=resource.kind,
-                        event_type="ERROR",
-                        relist_required=True,
+                response.close()
+            except Exception:
+                pass
+
+        latest_version = resource_version
+        events: list[WatchEvent] = []
+        try:
+            for line in response.iter_lines(decode_unicode=True):
+                if not line:
+                    continue
+                try:
+                    payload = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                event_type = payload.get("type")
+                if event_type == "ERROR":
+                    if drain_timer is not None:
+                        drain_timer.cancel()
+                    if _is_stale_watch_event(payload):
+                        return True, None, True, [WatchEvent(
+                            kind=resource.kind,
+                            event_type="ERROR",
+                            relist_required=True,
+                        )]
+                    raise RuntimeError(
+                        f"Kubernetes watch error for {resource.kind}: {json.dumps(payload)}"
                     )
-                raise RuntimeError(
-                    f"Kubernetes watch error for {resource.kind}: {json.dumps(payload)}"
-                )
 
-            obj = payload.get("object") or {}
-            metadata = obj.get("metadata") or {}
-            latest_version = str(metadata.get("resourceVersion") or latest_version or "")
-            if event_type in {"ADDED", "MODIFIED", "DELETED"}:
-                key = _document_key_from_raw(resource.kind, obj)
-                document = None
-                if event_type != "DELETED":
-                    document = load_document(obj)
-                return True, latest_version, False, WatchEvent(
-                    kind=resource.kind,
-                    event_type=event_type,
-                    key=key,
-                    document=document,
-                )
+                obj = payload.get("object") or {}
+                metadata = obj.get("metadata") or {}
+                latest_version = str(metadata.get("resourceVersion") or latest_version or "")
+                if event_type in {"ADDED", "MODIFIED", "DELETED"}:
+                    key = _document_key_from_raw(resource.kind, obj)
+                    document = None
+                    if event_type != "DELETED":
+                        document = load_document(obj)
+                    events.append(WatchEvent(
+                        kind=resource.kind,
+                        event_type=event_type,
+                        key=key,
+                        document=document,
+                    ))
+                    if drain_timer is None:
+                        drain_timer = threading.Timer(_DRAIN_DELAY_SECONDS, _fire_drain)
+                        drain_timer.daemon = True
+                        drain_timer.start()
+        except Exception:
+            if not drain_fired.is_set():
+                raise
+            # drain timer closed the stream — normal termination
+        finally:
+            if drain_timer is not None:
+                drain_timer.cancel()
 
-        return False, latest_version, False, None
+        return bool(events), latest_version, False, events
 
     def _get_json(self, url: str) -> dict:
         import requests
