@@ -32,6 +32,7 @@ class DocumentState:
     deleted_at: str | None = None
     last_seen_at: str | None = None
     last_applied_at: str | None = None
+    applied_commands: list[str] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, data: dict) -> "DocumentState":
@@ -56,6 +57,7 @@ class DocumentState:
             deleted_at=data.get("deleted_at"),
             last_seen_at=data.get("last_seen_at"),
             last_applied_at=data.get("last_applied_at"),
+            applied_commands=list(data.get("applied_commands") or []),
         )
 
     def to_dict(self) -> dict:

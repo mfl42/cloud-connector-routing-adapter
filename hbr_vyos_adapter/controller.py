@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 import time
 from dataclasses import asdict
@@ -14,6 +15,7 @@ from .models import NodeNetplanConfig
 from .models import NodeNetworkConfig
 from .reconcile import _document_key
 from .reconcile import reconcile_documents
+from .reconcile import teardown_documents
 from .state import ReconcileState
 from .status import build_status_report
 from .translator import VyosTranslator
@@ -78,10 +80,12 @@ class FileDocumentSource(DocumentSource):
     file: str
     name: str = "file"
     _documents_by_key: dict[str, NodeNetworkConfig | NodeNetplanConfig] = field(default_factory=dict)
+    _last_mtime: float = field(default=0.0)
 
     def initial_update(self) -> SourceUpdate:
         documents = load_documents(self.file)
         self._documents_by_key = {_document_key(document): document for document in documents}
+        self._last_mtime = _file_mtime(self.file)
         return SourceUpdate(
             documents=documents,
             changed_keys=set(self._documents_by_key),
@@ -90,6 +94,10 @@ class FileDocumentSource(DocumentSource):
 
     def wait_for_update(self, timeout_seconds: float) -> SourceUpdate | None:
         time.sleep(timeout_seconds)
+        current_mtime = _file_mtime(self.file)
+        if current_mtime == self._last_mtime:
+            return None
+        self._last_mtime = current_mtime
         documents = load_documents(self.file)
         next_documents = {_document_key(document): document for document in documents}
         removed = set(self._documents_by_key) - set(next_documents)
@@ -240,6 +248,7 @@ def run_controller(
         raise ValueError("write_status=True requires a KubeStatusWriter")
 
     result = ControllerRunResult(once=once, interval_seconds=interval_seconds, source=source.name)
+    translator = VyosTranslator()
     pending_update = source.initial_update()
     iteration = 0
     while True:
@@ -255,9 +264,17 @@ def run_controller(
                 )
             deleted_keys = state.mark_deleted(removed_keys)
 
+            if deleted_keys and apply:
+                teardown_documents(
+                    deleted_keys,
+                    state,
+                    state_file,
+                    client=vyos_client,
+                )
+
             reconcile_result = reconcile_documents(
                 pending_update.documents,
-                VyosTranslator(),
+                translator,
                 state,
                 state_file,
                 apply=apply,
@@ -329,6 +346,13 @@ def run_controller(
             except Exception as exc:  # pragma: no cover - exercised via CLI smoke paths
                 print(f"controller wait failed after iteration {iteration}: {exc}", file=sys.stderr)
                 time.sleep(interval_seconds)
+
+
+def _file_mtime(path: str) -> float:
+    try:
+        return os.stat(path).st_mtime
+    except OSError:
+        return 0.0
 
 
 def _build_kind_index(
