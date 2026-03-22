@@ -312,11 +312,16 @@ class NodeNetworkConfig:
 class RouteConfig:
     to: str
     via: str | None = None
+    metric: int | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "RouteConfig":
         data = _mapping_or_raise(data, "route")
-        return cls(to=data.get("to", ""), via=data.get("via"))
+        return cls(
+            to=data.get("to", ""),
+            via=data.get("via"),
+            metric=_int_or_none(data.get("metric")),
+        )
 
 
 @dataclass(slots=True)
@@ -324,6 +329,9 @@ class InterfaceConfig:
     name: str
     addresses: list[str] = field(default_factory=list)
     routes: list[RouteConfig] = field(default_factory=list)
+    mtu: int | None = None
+    dhcp4: bool = False
+    dhcp6: bool = False
 
     @classmethod
     def from_dict(cls, name: str, data: dict[str, Any]) -> "InterfaceConfig":
@@ -335,6 +343,9 @@ class InterfaceConfig:
                 RouteConfig.from_dict(item)
                 for item in _list_or_raise(data.get("routes"), f"interface {name}.routes")
             ],
+            mtu=_int_or_none(data.get("mtu")),
+            dhcp4=bool(data.get("dhcp4", False)),
+            dhcp6=bool(data.get("dhcp6", False)),
         )
 
 
