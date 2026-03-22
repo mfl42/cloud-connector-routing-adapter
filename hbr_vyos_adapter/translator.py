@@ -132,8 +132,10 @@ class VyosTranslator:
         for index, route in enumerate(vrf.static_routes, start=10):
             result.extend(self._translate_static_route(vrf, route, index))
 
-        for index, policy_route in enumerate(vrf.policy_routes, start=10):
-            result.extend(self._translate_policy_route(vrf, policy_route, index))
+        rule_id = 10
+        for policy_route in vrf.policy_routes:
+            pr_result, rule_id = self._translate_policy_route(vrf, policy_route, rule_id)
+            result.extend(pr_result)
 
         if vrf.bgp_peers:
             result.extend(self._translate_bgp(vrf))
@@ -185,31 +187,35 @@ class VyosTranslator:
         return result
 
     def _translate_policy_route(
-        self, vrf: VrfSpec, policy_route: PolicyRoute, rule_id: int
-    ) -> TranslationResult:
+        self, vrf: VrfSpec, policy_route: PolicyRoute, rule_id_start: int
+    ) -> tuple[TranslationResult, int]:
+        """Translate a policy route entry. Returns (result, next_available_rule_id)."""
         result = TranslationResult()
         traffic = policy_route.traffic_match
         family = _policy_address_family(
             traffic.source_prefixes,
             traffic.destination_prefixes,
             warnings=result.warnings,
-            context=f"policy route hbr-{vrf.name} rule {rule_id}",
+            context=f"policy route hbr-{vrf.name} rule {rule_id_start}",
         )
         if family is None:
-            return result
+            return result, rule_id_start + 1
+
         policy_name = f"hbr-{vrf.name}"
         policy_root = "policy route6" if family == 6 else "policy route"
 
-        if traffic.protocols:
-            protocol = _first_protocol(traffic.protocols)
-            if not protocol:
-                result.warnings.append(
-                    f"policy route {policy_name} rule {rule_id} has no supported protocol; skipping rule"
-                )
-                return result
-        else:
-            protocol = None
+        # Resolve the set of protocols to emit — one rule per protocol.
+        supported_protocols: list[str] = [
+            p for p in traffic.protocols if p in _SUPPORTED_PROTOCOLS
+        ]
+        if traffic.protocols and not supported_protocols:
+            result.warnings.append(
+                f"policy route {policy_name} rule {rule_id_start} has no supported protocol; skipping rule"
+            )
+            return result, rule_id_start + 1
+        protocols_to_emit: list[str | None] = supported_protocols if supported_protocols else [None]
 
+        # Interface binding is per-policy-map, not per-rule.
         if traffic.interface:
             result.commands.append(
                 f"set {policy_root} '{policy_name}' interface '{traffic.interface}'"
@@ -218,6 +224,38 @@ class VyosTranslator:
             result.warnings.append(
                 f"policy route {policy_name} has no interface binding; emit rules only"
             )
+
+        if policy_route.next_hop.address:
+            result.warnings.append(
+                f"policy route {policy_name} rule {rule_id_start} carries next-hop "
+                f"{policy_route.next_hop.address}; this scaffold maps policy rules to tables/VRFs, "
+                "not direct next-hop actions"
+            )
+
+        # One VyOS rule per protocol (or one rule with no protocol filter).
+        next_rule_id = rule_id_start
+        for protocol in protocols_to_emit:
+            result.extend(
+                self._emit_policy_rule(
+                    vrf, policy_route, policy_name, policy_root, family, next_rule_id, protocol
+                )
+            )
+            next_rule_id += 1
+
+        return result, next_rule_id
+
+    def _emit_policy_rule(
+        self,
+        vrf: VrfSpec,
+        policy_route: PolicyRoute,
+        policy_name: str,
+        policy_root: str,
+        family: int,
+        rule_id: int,
+        protocol: str | None,
+    ) -> TranslationResult:
+        result = TranslationResult()
+        traffic = policy_route.traffic_match
 
         for prefix in _filter_prefixes_for_family(
             traffic.source_prefixes,
@@ -243,12 +281,14 @@ class VyosTranslator:
                 f"set {policy_root} '{policy_name}' rule '{rule_id}' protocol '{protocol}'"
             )
         if traffic.source_ports:
+            port_value = ",".join(str(p) for p in traffic.source_ports)
             result.commands.append(
-                f"set {policy_root} '{policy_name}' rule '{rule_id}' source port '{traffic.source_ports[0]}'"
+                f"set {policy_root} '{policy_name}' rule '{rule_id}' source port '{port_value}'"
             )
         if traffic.destination_ports:
+            port_value = ",".join(str(p) for p in traffic.destination_ports)
             result.commands.append(
-                f"set {policy_root} '{policy_name}' rule '{rule_id}' destination port '{traffic.destination_ports[0]}'"
+                f"set {policy_root} '{policy_name}' rule '{rule_id}' destination port '{port_value}'"
             )
 
         if policy_route.next_hop.vrf:
@@ -262,13 +302,6 @@ class VyosTranslator:
         else:
             result.warnings.append(
                 f"policy route {policy_name} rule {rule_id} cannot resolve target table or target VRF"
-            )
-
-        if policy_route.next_hop.address:
-            result.warnings.append(
-                f"policy route {policy_name} rule {rule_id} carries next-hop "
-                f"{policy_route.next_hop.address}; this scaffold maps policy rules to tables/VRFs, "
-                "not direct next-hop actions"
             )
 
         return result
@@ -330,6 +363,9 @@ class VyosTranslator:
         bgp_root = f"set vrf name '{vrf.name}' protocols bgp"
         result.commands.append(f"{bgp_root} system-as '{vrf.bgp_system_as}'")
 
+        if vrf.bgp_router_id:
+            result.commands.append(f"{bgp_root} parameters router-id '{vrf.bgp_router_id}'")
+
         for peer in vrf.bgp_peers:
             result.extend(self._translate_bgp_peer(vrf.name, bgp_root, peer))
 
@@ -357,6 +393,20 @@ class VyosTranslator:
             result.commands.append(f"{peer_root} update-source '{peer.update_source}'")
         if peer.ebgp_multihop is not None and peer.ebgp_multihop > 0:
             result.commands.append(f"{peer_root} ebgp-multihop '{peer.ebgp_multihop}'")
+        if peer.password:
+            result.commands.append(f"{peer_root} password '{peer.password}'")
+        if peer.keepalive is not None and peer.holdtime is not None:
+            result.commands.append(f"{peer_root} timers keepalive '{peer.keepalive}'")
+            result.commands.append(f"{peer_root} timers holdtime '{peer.holdtime}'")
+        elif peer.keepalive is not None or peer.holdtime is not None:
+            result.warnings.append(
+                f"vrf {vrf_name} BGP peer {peer.address} has only one of keepalive/holdtime; "
+                "both must be set together — skipping timers"
+            )
+        if peer.bfd:
+            result.commands.append(f"{peer_root} bfd")
+        if peer.graceful_restart:
+            result.commands.append(f"{peer_root} graceful-restart")
 
         families, unknown_families = _normalized_bgp_address_families(peer.address_families)
         if unknown_families:
@@ -404,6 +454,18 @@ class VyosTranslator:
                 "ebgpMultihop",
                 "ebgp-multihop",
                 "multihop",
+                "password",
+                "peerPassword",
+                "bgpPassword",
+                "keepalive",
+                "keepAlive",
+                "holdtime",
+                "holdTime",
+                "hold-time",
+                "timers",
+                "bfd",
+                "gracefulRestart",
+                "graceful-restart",
                 "addressFamilies",
                 "addressFamily",
                 "address_families",
