@@ -16,16 +16,34 @@ class VyosApiClient:
         try:
             return self._post("/configure-list", ops)
         except RuntimeError:
-            responses: list[dict] = []
-            for command in commands:
-                responses.append(self._configure_command(command))
-            return {
-                "success": all(
-                    item.get("success", True) or _is_idempotent_response(item)
-                    for item in responses
-                ),
-                "operations": responses,
-            }
+            return self._configure_commands_sequential(commands)
+
+    def discard_pending(self) -> dict:
+        """Discard any uncommitted staged changes on the VyOS target."""
+        try:
+            return self._post("/configure", {"op": "discard"})
+        except RuntimeError as exc:
+            return {"success": False, "error": str(exc)}
+
+    def _configure_commands_sequential(self, commands: list[str]) -> dict:
+        responses: list[dict] = []
+        for command in commands:
+            resp = self._configure_command(command)
+            responses.append(resp)
+            if not resp.get("success", True) and not _is_idempotent_response(resp):
+                self.discard_pending()
+                return {
+                    "success": False,
+                    "error": str(resp.get("error") or "command failed"),
+                    "operations": responses,
+                }
+        return {
+            "success": all(
+                item.get("success", True) or _is_idempotent_response(item)
+                for item in responses
+            ),
+            "operations": responses,
+        }
 
     def _build_operation(self, command: str) -> dict:
         tokens = shlex.split(command)
