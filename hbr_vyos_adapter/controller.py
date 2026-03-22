@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import sys
 import time
@@ -105,7 +106,7 @@ class FileDocumentSource(DocumentSource):
             key
             for key, document in next_documents.items()
             if key not in self._documents_by_key
-            or self._documents_by_key[key].raw != document.raw
+            or _raw_changed(self._documents_by_key[key].raw, document.raw)
         }
         self._documents_by_key = next_documents
         if not changed and not removed:
@@ -221,7 +222,7 @@ class KubernetesDocumentSource(DocumentSource):
         previous = self._documents_by_key.get(event.key)
         self._documents_by_key[event.key] = event.document
         kind_keys.add(event.key)
-        if previous is None or previous.raw != event.document.raw:
+        if previous is None or _raw_changed(previous.raw, event.document.raw):
             changed_keys.add(event.key)
             changed_documents[event.key] = event.document
 
@@ -265,12 +266,15 @@ def run_controller(
             deleted_keys = state.mark_deleted(removed_keys)
 
             if deleted_keys and apply:
-                teardown_documents(
-                    deleted_keys,
-                    state,
-                    state_file,
-                    client=vyos_client,
-                )
+                try:
+                    teardown_documents(
+                        deleted_keys,
+                        state,
+                        state_file,
+                        client=vyos_client,
+                    )
+                except Exception as exc:
+                    print(f"teardown failed for keys {sorted(deleted_keys)}: {exc}", file=sys.stderr)
 
             reconcile_result = reconcile_documents(
                 pending_update.documents,
@@ -346,6 +350,10 @@ def run_controller(
             except Exception as exc:  # pragma: no cover - exercised via CLI smoke paths
                 print(f"controller wait failed after iteration {iteration}: {exc}", file=sys.stderr)
                 time.sleep(interval_seconds)
+
+
+def _raw_changed(a: dict, b: dict) -> bool:
+    return json.dumps(a, sort_keys=True) != json.dumps(b, sort_keys=True)
 
 
 def _file_mtime(path: str) -> float:
