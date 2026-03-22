@@ -75,6 +75,8 @@ class TrafficMatch:
                 or destination.get("ports")
                 or destination.get("port")
             ),
+            # Normalise to lowercase with underscores. translator._SUPPORTED_PROTOCOLS
+            # must match this canonical form (e.g. "tcp-udp" → "tcp_udp").
             protocols=[str(item).lower().replace("-", "_") for item in protocols],
             interface=data.get("interface") or data.get("inboundInterface"),
         )
@@ -176,6 +178,8 @@ class VrfSpec:
 
     @classmethod
     def from_dict(cls, name: str, data: dict[str, Any]) -> "VrfSpec":
+        if not name or not name.strip():
+            raise ValueError("VRF name must be a non-empty string")
         data = _mapping_or_raise(data, f"vrf {name}")
         bgp_data = _mapping_or_raise(data.get("bgp"), f"vrf {name}.bgp", allow_none=True)
         bgp_system_as = _string_or_none(

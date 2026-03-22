@@ -421,10 +421,16 @@ def _iter_vrfs(document: NodeNetworkConfig) -> list[VrfSpec]:
     return vrfs
 
 
+# Protocols accepted by VyOS policy route rules.
+# models.py normalises raw protocol strings to lowercase with hyphens replaced
+# by underscores before storing them (e.g. "tcp-udp" → "tcp_udp"). The values
+# here must match that normalised form exactly.
+_SUPPORTED_PROTOCOLS: frozenset[str] = frozenset({"tcp", "udp", "tcp_udp", "icmp", "icmpv6"})
+
+
 def _first_protocol(protocols: list[str]) -> str | None:
-    supported = {"tcp", "udp", "tcp_udp", "icmp", "icmpv6"}
     for protocol in protocols:
-        if protocol in supported:
+        if protocol in _SUPPORTED_PROTOCOLS:
             return protocol
     return None
 
