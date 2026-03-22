@@ -69,7 +69,7 @@ class VyosTranslator:
                         f"interface {iface.name} address {address!r} is invalid; skipping"
                     )
                     continue
-                result.commands.append(f"set interfaces ethernet {iface.name} address '{address}'")
+                result.commands.append(_netplan_address_command(iface.name, address))
 
             for route in iface.routes:
                 if not route.to or not route.via:
@@ -267,6 +267,31 @@ class VyosTranslator:
 
     def _translate_vrf_interface(self, vrf_name: str, interface: str) -> TranslationResult:
         result = TranslationResult()
+
+        if "." in interface:
+            base, _, vlan_id = interface.partition(".")
+            if not vlan_id.isdigit():
+                result.unsupported.append(
+                    f"vrf {vrf_name} interface {interface} has a non-numeric VLAN id"
+                )
+                return result
+            base_type = _infer_interface_type(base)
+            if base_type is None:
+                result.unsupported.append(
+                    f"vrf {vrf_name} interface {interface} base {base!r} uses an unknown interface family"
+                )
+                return result
+            if base_type not in self._vrf_interface_types:
+                result.unsupported.append(
+                    f"vrf {vrf_name} interface {interface} base {base!r} is inferred as {base_type}, "
+                    "which is not in the supported attachment list for this scaffold"
+                )
+                return result
+            result.commands.append(
+                f"set interfaces {base_type} {base} vif '{vlan_id}' vrf '{vrf_name}'"
+            )
+            return result
+
         interface_type = _infer_interface_type(interface)
         if interface_type is None:
             result.unsupported.append(
@@ -520,6 +545,16 @@ def _filter_prefixes_for_family(
             continue
         valid.append(prefix)
     return valid
+
+
+def _netplan_address_command(interface: str, address: str) -> str:
+    """Generate a VyOS set command for an interface address, handling VLAN subinterfaces."""
+    if "." in interface:
+        base, _, vlan_id = interface.partition(".")
+        if vlan_id.isdigit():
+            base_type = _infer_interface_type(base) or "ethernet"
+            return f"set interfaces {base_type} {base} vif '{vlan_id}' address '{address}'"
+    return f"set interfaces ethernet {interface} address '{address}'"
 
 
 def _is_valid_interface_address(value: str) -> bool:
