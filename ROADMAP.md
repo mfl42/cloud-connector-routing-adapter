@@ -133,54 +133,184 @@ passes the same instance to every reconcile call.
 
 ## Planned
 
-### Rollback on apply failure
+Gaps are grouped by theme. Each entry names the affected field or component,
+describes the current behaviour, and states what is missing.
 
-When a `/configure-list` call succeeds partially before VyOS rejects the
-commit, the adapter has no mechanism to roll back the staged changes. A
-subsequent apply may encounter a VyOS in an inconsistent state.
+---
+
+### Translation gaps — NodeNetworkConfig
+
+#### Policy route: direct next-hop action not emitted
+
+`policyRoute.nextHop.address` is parsed and surfaced as a warning but generates
+no VyOS command. The adapter currently maps policy rules only to a target VRF
+or routing table (`set vrf` / `set table`). A direct next-hop action
+(`set nexthop`) is not yet emitted.
+
+Current behaviour: `nextHop.address` present → warning, no command.
+
+#### Policy route: only the first protocol is used
+
+`trafficMatch.protocols` is a list but only the first recognised protocol is
+translated. Subsequent entries are silently dropped.
+
+Current behaviour: `["tcp", "udp"]` → only `tcp` is emitted.
+
+#### Policy route: only the first port is used
+
+`trafficMatch.sourcePorts` and `trafficMatch.destinationPorts` are lists but
+only index `[0]` is translated. Multiple port values or port ranges are
+silently dropped.
+
+#### Static route: next-hop interface not mapped
+
+`staticRoute.nextHop` only reads `address`. A next-hop interface binding
+(`nextHop.interface` or equivalent) is not translated.
+
+#### BGP: peer password not mapped
+
+`password` / `peerPassword` on a BGP peer entry is not in the supported field
+set. It is silently absent from the generated commands.
+
+#### BGP: route-map and prefix-list not mapped
+
+Route policies (`routeMap`, `inboundRouteMap`, `outboundRouteMap`), prefix
+filters (`prefixList`, `distributionList`), and community attributes are not
+in the supported peer field set. They are surfaced as unsupported fields on
+the peer.
+
+#### BGP: timers not mapped
+
+`keepalive`, `holdtime`, and similar timer fields on BGP peers are not
+translated.
+
+#### BGP: BFD and graceful-restart not mapped
+
+`bfd` and `gracefulRestart` peer-level flags are not in the supported field
+set. They are surfaced as unsupported fields on the peer.
+
+#### BGP: global router-id not mapped
+
+There is no path in the current translation to emit
+`set vrf name 'X' protocols bgp parameters router-id`. Router-id is not read
+from the VRF spec.
+
+---
+
+### Translation gaps — NodeNetplanConfig
+
+#### Interface family assumed to be ethernet
+
+`NodeNetplanConfig` address and route translation unconditionally emits
+`set interfaces ethernet <name> ...`. Bond (`bond*`), bridge (`br*`), dummy
+(`dum*`), and other non-ethernet families declared in netplan are not
+disambiguated. The correct VyOS interface type would not be selected.
+
+#### Interface MTU not mapped
+
+`<interface>.mtu` is present in netplan semantics but is not read from the
+model or translated to `set interfaces <family> <name> mtu '<value>'`.
+
+#### Interface route metric not mapped
+
+`route.metric` is not read from `RouteConfig`. VyOS supports
+`set protocols static route '<prefix>' next-hop '<via>' distance '<metric>'`.
+All routes are currently applied without a metric.
+
+#### Interface route on-link flag not mapped
+
+`route.on-link` (used in netplan to suppress next-hop reachability checks) is
+not translated. VyOS does not have a direct equivalent but the intent needs
+explicit handling.
+
+#### DHCP / dynamic address not mapped
+
+`dhcp4` and `dhcp6` interface flags are not read from the model. Dynamic
+address assignment via `set interfaces <family> <name> address dhcp` is not
+emitted.
+
+---
+
+### Convergence gaps
+
+#### Rollback on apply failure
+
+When a `/configure-list` call is accepted by VyOS but the subsequent commit
+fails, the adapter has no mechanism to roll back staged changes. A subsequent
+apply may encounter a partially staged configuration.
+
+Current behaviour: apply error is propagated; state is not updated; no
+rollback is attempted.
 
 Planned: invoke `rollback` via the VyOS API on detected commit failure, then
 re-attempt from a clean baseline.
 
----
+#### No delete emitted for policy route interface binding on document change
 
-### BGP policy and advanced peer options
+`set policy route '<name>' interface '<if>'` is emitted once per policy route.
+If the bound interface changes in a document update, the old binding is not
+explicitly removed before the new one is written. VyOS may retain both bindings
+depending on version behaviour.
 
-The current BGP translation covers `remote-as`, `update-source`, `ebgp-multihop`,
-and address-family activation. Route policies, community attributes, prefix
-filters, and timers are surfaced as unsupported warnings.
+#### No delete emitted for VRF table change
 
-Planned: extend the BGP translator to cover the most common peer policy fields
-used in Sylva/Cloud Connector deployments.
-
----
-
-### Full CRA status contract
-
-The adapter currently exports a local status report and patches the Kubernetes
-`status` subresource. The full CRA readiness, rollout, and reconciliation
-status contract is not yet implemented.
-
-Planned: align the status export with the CRA contract fields expected by the
-upstream HBR operator.
+If `<vrf>.table` changes between two revisions, the adapter emits the new
+`set vrf name '<name>' table '<new>'` but does not delete the old table
+assignment. On some VyOS versions this produces a validation error.
 
 ---
 
-### L2 / VNI support
+### Status and operator contract gaps
 
-`layer2s` fields in `NodeNetworkConfig` are detected and surfaced as
-unsupported warnings. No translation is attempted.
+#### Full CRA status contract not implemented
 
-Planned: evaluate VXLAN and VNI mapping options for the current VyOS-compatible
-target and implement a safe, explicit subset.
+The adapter exports a local `AdapterStatusReport` and patches the Kubernetes
+`status` subresource with phase, revision, warnings, and conditions. The full
+CRA readiness, rollout, and reconciliation status fields expected by the HBR
+operator are not yet modelled.
+
+Current fields emitted: `phase`, `observedRevision`, `warningCount`,
+`unsupportedCount`, `conditions` (DesiredSeen, Applied, InSync, HasWarnings,
+Deleted).
+
+Missing: rollout readiness gates, per-interface readiness, CRA-level
+`reconciling`/`degraded`/`available` conditions.
+
+#### `spec.revision` not forwarded to VyOS
+
+`NodeNetworkConfig.spec.revision` is tracked for reconcile visibility and
+surfaced as a translation warning. No VyOS config command is emitted for it.
+This is by design today but means the routing target has no visibility of the
+HBR revision currently applied.
 
 ---
 
-### Real Kubernetes informer loop
+### L2 / VNI
 
-The current Kubernetes source relies on a list-then-watch loop with manual
-stale-watch recovery. A proper informer with shared cache and event handlers
-would reduce load on the API server and improve responsiveness.
+`spec.layer2s` in `NodeNetworkConfig` is detected and surfaced as unsupported.
+No translation is attempted.
 
-Planned: evaluate replacement with a lightweight informer client once the core
-translation and convergence layer is stable.
+VXLAN interface creation (`set interfaces vxlan vxlan<n> ...`), VNI-to-VRF
+binding, and EVPN address-family activation under BGP are all absent.
+
+---
+
+### Kubernetes integration gaps
+
+#### Real informer loop
+
+The current Kubernetes source uses a manual list-then-watch loop with
+stale-watch recovery via relist. A shared-cache informer with event handlers
+would reduce API server load and improve change detection latency.
+
+#### Cluster-scoped CRD watch not exercised by default
+
+The controller defaults to namespace-scoped list/watch. Cluster-scoped CRD
+deployments require `--cluster-scoped` and are not covered by the local
+regression harness.
+
+#### No leader election
+
+Running multiple adapter instances against the same Kubernetes namespace and
+VyOS target produces conflicting applies. No leader-election or locking
+mechanism is implemented.
