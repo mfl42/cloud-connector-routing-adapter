@@ -153,8 +153,10 @@ class VyosTranslator:
         if not route.prefix:
             result.warnings.append(f"vrf {vrf.name} contains a static route without a prefix")
             return result
-        if not route.next_hop.address:
-            result.warnings.append(f"vrf {vrf.name} route {route.prefix} is missing next-hop address")
+        if not route.next_hop.address and not route.next_hop.interface:
+            result.warnings.append(
+                f"vrf {vrf.name} route {route.prefix} is missing next-hop address and interface"
+            )
             return result
         if vrf.table is None:
             result.warnings.append(f"vrf {vrf.name} route {route.prefix} skipped because vrf table is unset")
@@ -167,29 +169,28 @@ class VyosTranslator:
         )
         if family is None:
             return result
-        next_hop_family = _validated_ip_family(
-            route.next_hop.address,
-            warnings=result.warnings,
-            context=f"vrf {vrf.name} static route next-hop {route.next_hop.address!r}",
-        )
-        if next_hop_family is None:
-            return result
-        if next_hop_family != family:
-            result.warnings.append(
-                f"vrf {vrf.name} route {route.prefix} next-hop {route.next_hop.address} "
-                "uses a different address family; skipping"
+
+        proto = "route" if family == 4 else "route6"
+        route_path = f"set vrf name '{vrf.name}' protocols static {proto} '{route.prefix}'"
+
+        if route.next_hop.address:
+            next_hop_family = _validated_ip_family(
+                route.next_hop.address,
+                warnings=result.warnings,
+                context=f"vrf {vrf.name} static route next-hop {route.next_hop.address!r}",
             )
-            return result
-        if family == 4:
-            result.commands.append(
-                f"set vrf name '{vrf.name}' protocols static route '{route.prefix}' "
-                f"next-hop '{route.next_hop.address}'"
-            )
+            if next_hop_family is None:
+                return result
+            if next_hop_family != family:
+                result.warnings.append(
+                    f"vrf {vrf.name} route {route.prefix} next-hop {route.next_hop.address} "
+                    "uses a different address family; skipping"
+                )
+                return result
+            result.commands.append(f"{route_path} next-hop '{route.next_hop.address}'")
         else:
-            result.commands.append(
-                f"set vrf name '{vrf.name}' protocols static route6 '{route.prefix}' "
-                f"next-hop '{route.next_hop.address}'"
-            )
+            result.commands.append(f"{route_path} interface '{route.next_hop.interface}'")
+
         return result
 
     def _translate_policy_route(
