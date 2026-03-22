@@ -324,11 +324,42 @@ def _compute_diff_deletes(removed_cmds: set[str], new_cmds: set[str]) -> list[st
             absorbed.update(cmds)
 
     fine = sorted(
-        "delete " + cmd[4:]
+        _to_delete_path(cmd)
         for cmd in removed_cmds - absorbed
         if cmd.startswith("set ")
     )
     return coarse + fine
+
+
+# Scalar leaf nodes whose value must be stripped when generating a delete
+# command — specifying the value in a VyOS delete path is not valid for these.
+_SCALAR_LEAF_RE = re.compile(
+    r"^set ("
+    r"vrf name '[^']+' table"
+    r"|vrf name '[^']+' protocols bgp system-as"
+    r"|vrf name '[^']+' protocols bgp parameters router-id"
+    r"|vrf name '[^']+' protocols bgp neighbor '[^']+' remote-as"
+    r"|vrf name '[^']+' protocols bgp neighbor '[^']+' update-source"
+    r"|vrf name '[^']+' protocols bgp neighbor '[^']+' ebgp-multihop"
+    r"|vrf name '[^']+' protocols bgp neighbor '[^']+' password"
+    r"|vrf name '[^']+' protocols bgp neighbor '[^']+' timers keepalive"
+    r"|vrf name '[^']+' protocols bgp neighbor '[^']+' timers holdtime"
+    r") '[^']+'\s*$"
+)
+
+
+def _to_delete_path(cmd: str) -> str:
+    """Convert a set command to the correct VyOS delete path.
+
+    For scalar leaf nodes (e.g. table, system-as) the trailing value must be
+    stripped because VyOS does not accept a value in the delete path for those
+    nodes.  For list-key nodes (e.g. next-hop address, route prefix) the full
+    path including the key value is correct and is preserved.
+    """
+    m = _SCALAR_LEAF_RE.match(cmd)
+    if m:
+        return f"delete {m.group(1)}"
+    return "delete " + cmd[4:]
 
 
 def _commands_digest(commands: list[str]) -> str:

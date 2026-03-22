@@ -63,13 +63,24 @@ class VyosTranslator:
     def translate_node_netplan_config(self, document: NodeNetplanConfig) -> TranslationResult:
         result = TranslationResult()
         for iface in document.interfaces.values():
+            iface_path = _netplan_interface_path(iface.name)
+
+            if iface.mtu is not None:
+                result.commands.append(f"set {iface_path} mtu '{iface.mtu}'")
+
+            if iface.dhcp4:
+                result.commands.append(f"set {iface_path} address 'dhcp'")
+
+            if iface.dhcp6:
+                result.commands.append(f"set {iface_path} address 'dhcp6'")
+
             for address in iface.addresses:
                 if not _is_valid_interface_address(address):
                     result.warnings.append(
                         f"interface {iface.name} address {address!r} is invalid; skipping"
                     )
                     continue
-                result.commands.append(_netplan_address_command(iface.name, address))
+                result.commands.append(f"set {iface_path} address '{address}'")
 
             for route in iface.routes:
                 if not route.to or not route.via:
@@ -90,21 +101,16 @@ class VyosTranslator:
                         f"interface {iface.name} route via {route.via!r} is invalid; skipping"
                     )
                     continue
-                if route.to == "0.0.0.0/0":
+
+                metric_suffix = f" distance '{route.metric}'" if route.metric is not None else ""
+                proto = "route" if family == 4 else "route6"
+                if route.to in ("0.0.0.0/0", "::/0"):
                     result.commands.append(
-                        f"set protocols static route 0.0.0.0/0 next-hop '{route.via}'"
-                    )
-                elif route.to == "::/0":
-                    result.commands.append(
-                        f"set protocols static route6 ::/0 next-hop '{route.via}'"
-                    )
-                elif family == 4:
-                    result.commands.append(
-                        f"set protocols static route '{route.to}' next-hop '{route.via}'"
+                        f"set protocols static {proto} {route.to} next-hop '{route.via}'{metric_suffix}"
                     )
                 else:
                     result.commands.append(
-                        f"set protocols static route6 '{route.to}' next-hop '{route.via}'"
+                        f"set protocols static {proto} '{route.to}' next-hop '{route.via}'{metric_suffix}"
                     )
 
         for nameserver in document.nameservers:
@@ -564,14 +570,15 @@ def _filter_prefixes_for_family(
     return valid
 
 
-def _netplan_address_command(interface: str, address: str) -> str:
-    """Generate a VyOS set command for an interface address, handling VLAN subinterfaces."""
+def _netplan_interface_path(interface: str) -> str:
+    """Return the VyOS path prefix for an interface, handling VLAN subinterfaces."""
     if "." in interface:
         base, _, vlan_id = interface.partition(".")
         if vlan_id.isdigit():
             base_type = _infer_interface_type(base) or "ethernet"
-            return f"set interfaces {base_type} {base} vif '{vlan_id}' address '{address}'"
-    return f"set interfaces ethernet {interface} address '{address}'"
+            return f"interfaces {base_type} {base} vif '{vlan_id}'"
+    iface_type = _infer_interface_type(interface) or "ethernet"
+    return f"interfaces {iface_type} {interface}"
 
 
 def _is_valid_interface_address(value: str) -> bool:
