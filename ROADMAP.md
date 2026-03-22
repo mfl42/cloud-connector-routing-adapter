@@ -341,10 +341,13 @@ skipped; if all are unsupported the rule is omitted with a warning.
 (`",".join(...)`) and emitted as a single VyOS port value, which VyOS
 natively accepts as a comma-separated list.
 
-#### Static route: next-hop interface not mapped
+#### ~~Static route: next-hop interface not mapped~~ ✓
 
-`staticRoute.nextHop` only reads `address`. A next-hop interface binding
-(`nextHop.interface` or equivalent) is not translated.
+`NextHop` gains an `interface` field (parsed from `interface`, `dev`, or
+`outboundInterface`). `_translate_static_route` now emits
+`set ... static route '<prefix>' interface '<iface>'` when only an interface
+is set, or `next-hop '<addr>'` when an address is set. Both fields are
+accepted; address takes priority when both are present.
 
 #### ~~BGP: peer password not mapped~~ ✓
 
@@ -425,12 +428,13 @@ rollback is attempted.
 Planned: invoke `rollback` via the VyOS API on detected commit failure, then
 re-attempt from a clean baseline.
 
-#### No delete emitted for policy route interface binding on document change
+#### ~~No delete emitted for policy route interface binding on document change~~ ✓
 
-`set policy route '<name>' interface '<if>'` is emitted once per policy route.
-If the bound interface changes in a document update, the old binding is not
-explicitly removed before the new one is written. VyOS may retain both bindings
-depending on version behaviour.
+`set policy route '<name>' interface '<if>'` is included in `applied_commands`.
+When the interface changes, `_compute_diff_deletes` emits
+`delete policy route '<name>' interface '<old>'` before the new set.
+The value is correctly kept in the delete path because `interface` is a
+list-key node in VyOS (not a scalar leaf).
 
 #### ~~Scalar leaf delete includes value — VyOS rejects path~~ ✓
 
@@ -439,11 +443,12 @@ trailing value from known scalar leaf nodes (`table`, `system-as`, `router-id`,
 `remote-as`, `update-source`, `ebgp-multihop`, `password`, `timers keepalive`,
 `timers holdtime`). VyOS requires the path without a value for these nodes.
 
-#### No delete emitted for VRF table change
+#### ~~No delete emitted for VRF table change~~ ✓
 
-If `<vrf>.table` changes between two revisions, the adapter emits the new
-`set vrf name '<name>' table '<new>'` but does not delete the old table
-assignment. On some VyOS versions this produces a validation error.
+When `table` changes, the old `set vrf name '<name>' table '<old>'` falls into
+`removed_cmds`. `_to_delete_path` matches `_SCALAR_LEAF_RE` and emits
+`delete vrf name '<name>' table` (value stripped, as VyOS requires), before
+the new `set vrf name '<name>' table '<new>'` is applied.
 
 ---
 

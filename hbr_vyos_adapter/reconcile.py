@@ -300,6 +300,11 @@ def _desired_revision(
     return f"digest-{_commands_digest(commands)[:12]}"
 
 
+_BGP_NEIGHBOR_RE = re.compile(
+    r"^set (vrf name '[^']+' protocols bgp neighbor '[^']+')(?:\s|$)"
+)
+
+
 def _compute_diff_deletes(removed_cmds: set[str], new_cmds: set[str]) -> list[str]:
     """Generate VyOS delete commands for removed commands.
 
@@ -307,12 +312,9 @@ def _compute_diff_deletes(removed_cmds: set[str], new_cmds: set[str]) -> list[st
     ``delete ... neighbor 'addr'`` to avoid leaving VyOS with an incomplete
     neighbor config after a partial leaf delete.
     """
-    _bgp_neighbor_re = re.compile(
-        r"^set (vrf name '[^']+' protocols bgp neighbor '[^']+')(?:\s|$)"
-    )
     neighbor_prefixes: dict[str, list[str]] = {}
     for cmd in removed_cmds:
-        m = _bgp_neighbor_re.match(cmd)
+        m = _BGP_NEIGHBOR_RE.match(cmd)
         if m:
             neighbor_prefixes.setdefault(m.group(1), []).append(cmd)
 
