@@ -165,11 +165,10 @@ Disadvantages:
 This tradeoff is acceptable for the first phase because it minimizes risk while
 still proving functional alignment.
 
-## Private Roadmap
+## Roadmap
 
-Detailed forward-planning and milestone sequencing are intentionally kept out of
-the public branch. This document focuses on current architecture, behavior, and
-validated scope.
+See [ROADMAP.md](ROADMAP.md) for the full list of completed work and planned
+improvements, including all known feature gaps.
 
 ## Open Questions
 
