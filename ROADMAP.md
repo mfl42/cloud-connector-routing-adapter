@@ -175,26 +175,24 @@ a failed apply from a pending-apply or no-op.
 
 ---
 
-### P1 — Silent incorrect behaviour
+### P1 — Fixed
 
-#### translator.py — policy route emitted without protocol filter on unknown protocol
+#### ~~translator.py — policy route emitted without protocol filter on unknown protocol~~ ✓
 
-When `trafficMatch.protocols` contains only unrecognised values (e.g. `gre`,
-`esp`), `_first_protocol()` returns `None` and no protocol clause is emitted.
-The resulting policy rule matches all protocols on the specified interface,
-which can intercept unintended traffic.
+When all protocols in `trafficMatch.protocols` are unrecognised, the rule is
+now skipped entirely. Previously the rule was emitted without a protocol
+clause, matching all traffic on the interface.
 
-#### translator.py — ebgp-multihop 0 sent to VyOS
+#### ~~translator.py — ebgp-multihop 0 sent to VyOS~~ ✓
 
-`BgpPeer.ebgp_multihop` is emitted if `is not None`. A value of `0` generates
-`set ... ebgp-multihop '0'` which VyOS rejects at runtime, silently leaving
-the peer without a multihop setting after a failed commit.
+`ebgp-multihop` is now only emitted when the value is greater than zero.
+A value of `0` (disabled) is silently skipped.
 
-#### translator.py — policy-route IPv4 assumed when no valid prefix found
+#### ~~translator.py — policy-route IPv4 assumed when no valid prefix found~~ ✓
 
-`_policy_address_family()` returns `4` when no valid prefix is found in the
-source or destination lists. A policy route with only invalid or absent
-prefixes is silently treated as an IPv4 rule rather than being skipped.
+`_policy_address_family()` now returns `None` (skip rule) when prefixes are
+provided but all are invalid. The IPv4 default is only used when no prefixes
+are specified at all.
 
 #### translator.py — incorrect VyOS interface type for VLAN on non-ethernet base
 
@@ -203,44 +201,36 @@ prefixes is silently treated as an IPv4 rule rather than being skipped.
 `vxlan1.100`). The generated command targets `interfaces ethernet` instead of
 the correct type, producing no visible error but configuring nothing.
 
-#### translator.py — spurious "no table" warning for interface-only VRFs
+#### ~~translator.py — spurious "no table" warning for interface-only VRFs~~ ✓
 
-The warning `vrf has no table; route programming may be incomplete` is emitted
-for every VRF that has no `table` field, including VRFs that only carry
-interface attachments where the table is not required.
+The warning is now scoped to VRFs that have static routes, BGP peers, or
+policy routes — the cases where the routing table is actually required.
 
-#### controller.py — raw dict comparison causes false-positive reconcile triggers
+#### ~~controller.py — raw dict comparison causes false-positive reconcile triggers~~ ✓
 
-`FileDocumentSource.wait_for_update()` compares documents using
-`document.raw != stored.raw`. Two semantically identical JSON objects with
-different key ordering are considered different. This triggers a reconcile cycle
-with no effective changes.
+Document change detection now uses `json.dumps(sort_keys=True)` for
+comparison, making it insensitive to key ordering differences.
 
-#### controller.py — teardown exception aborts the reconcile cycle
+#### ~~controller.py — teardown exception aborts the reconcile cycle~~ ✓
 
-`teardown_documents()` is called outside any exception guard. A VyOS API error
-during teardown propagates and aborts the remainder of the reconcile iteration,
-leaving active documents unprocessed.
+`teardown_documents()` is now wrapped in a try/except. Teardown failures are
+logged to stderr but do not abort the reconcile iteration.
 
-#### state.py — corrupted state file raises unhandled exception
+#### ~~state.py — corrupted state file raises unhandled exception~~ ✓
 
-`ReconcileState.load()` returns an empty state if the file is absent, but
-raises an unhandled `json.JSONDecodeError` if the file exists and is corrupted
-(e.g. truncated after a crash). The adapter cannot start until the file is
-manually removed.
+`ReconcileState.load()` now catches `json.JSONDecodeError` and returns an
+empty state, allowing the adapter to start cleanly after a crash.
 
-#### state.py — non-numeric field value in state file raises ValueError
+#### ~~state.py — non-numeric field value in state file raises ValueError~~ ✓
 
-`_int_or_none()` calls `int(value)` without a try/except. A state file with a
-non-numeric string in an integer field (e.g. after manual editing) raises
-`ValueError` and prevents the adapter from loading any saved state.
+`_int_or_none()` now catches `ValueError` and `TypeError`, returning `None`
+for any non-numeric value instead of crashing.
 
-#### status.py — transition_time changes on every call when timestamps are absent
+#### ~~status.py — transition_time changes on every call when timestamps are absent~~ ✓
 
-`build_status_report()` falls back to `_utc_now()` when both `last_applied_at`
-and `last_seen_at` are `None`. Two successive calls to the same function on the
-same unchanged state produce different `transition_time` values in the exported
-status, which may confuse downstream consumers.
+`build_status_report()` now accepts an optional `now` parameter and threads a
+single timestamp through all `_build_document_status()` calls. Successive
+calls on the same unchanged state produce identical output.
 
 #### reconcile.py — BGP delete consolidation regex misses quoted special characters
 
@@ -251,39 +241,32 @@ deletes, which may leave VyOS with a partially configured neighbor after commit.
 
 ---
 
-### P2 — Unprotected edge cases
+### P2 — Fixed
 
-#### translator.py — loopback inferred but never emitted
+#### ~~translator.py — loopback inferred but never emitted~~ ✓
 
-`_infer_interface_type()` returns `"loopback"` for interfaces starting with
-`lo`. `"loopback"` is not in `_vrf_interface_types` so it always produces an
-`unsupported` marker. The inferred type is misleading and could be replaced
-with a direct unsupported marker.
+`"loopback"` has been removed from `_infer_interface_type()`. Interfaces
+starting with `lo` now produce a clean "unknown interface family" unsupported
+marker rather than the misleading "inferred as loopback" message.
 
-#### models.py — empty VRF name accepted
+#### ~~models.py — empty VRF name accepted~~ ✓
 
-`VrfSpec.from_dict()` does not validate that `name` is non-empty. An empty
-string produces `set vrf name '' ...` commands that VyOS rejects at runtime.
+`VrfSpec.from_dict()` now raises `ValueError` immediately when `name` is empty
+or whitespace-only, making the models layer the primary rejection point.
 
-#### vyos_api.py — idempotent error detection is version-dependent
+#### ~~vyos_api.py — idempotent error detection is version-dependent~~ ✓
 
-`_is_idempotent_response()` matches on the literal strings `"already exists"`
-and `"is already defined"`. VyOS error messages vary across versions. A future
-version change could silently stop treating repeated applies as idempotent or,
-conversely, treat a real error as idempotent.
+`_is_idempotent_response()` now also matches `"already set"` and
+`"is already present"` to cover additional VyOS version variants.
 
-#### vyos_api.py — show_config() is dead code
+#### ~~vyos_api.py — show_config() is dead code~~ ✓
 
-`VyosApiClient.show_config()` is defined but never called anywhere in the
-adapter. It is either an unused stub or a missing call site.
+`VyosApiClient.show_config()` has been removed.
 
-#### k8s_documents.py — futures_wait timeout is double-counted
+#### ~~k8s_documents.py — futures_wait timeout is double-counted~~ ✓
 
-`futures_wait(timeout=full_timeout + self.timeout + 5)` adds the HTTP client
-timeout on top of the watch timeout. With default values this is
-`30 + 30 + 5 = 65` seconds. Under normal operation the watchers return well
-within `full_timeout`; the added headroom is larger than necessary and delays
-detection of hung threads.
+The outer `futures_wait` timeout is now `full_timeout + self.timeout`,
+removing the redundant `+5` constant.
 
 #### k8s_documents.py — only the first watch event per cycle is processed
 
@@ -291,41 +274,40 @@ detection of hung threads.
 or `DELETED` event. If two CRDs change in rapid succession, the second event
 is not seen until the next watch cycle, increasing convergence lag.
 
-#### k8s_status.py — token file read without error handling
+#### ~~k8s_status.py — token file read without error handling~~ ✓
 
-`Path(user_entry["tokenFile"]).read_text()` raises an unhandled exception if
-the token file is deleted or becomes unreadable between kubeconfig parsing and
-API use.
+The `tokenFile` read is now wrapped in a try/except that surfaces a clear
+`RuntimeError` instead of letting an `OSError` propagate unexpectedly.
 
-#### controller.py — local import inside conditional block
+#### ~~controller.py — local import inside conditional block~~ ✓
 
-`from .status import write_status_report` is placed inside a conditional `if`
-block (the tombstone pruning path). An `ImportError` in this module would only
-be discovered at runtime when the specific condition is met, not at startup.
+`write_status_report` is now imported at module level alongside the other
+`status` imports.
 
 ---
 
-### P3 — Design fragility
+### P3 — Fixed
 
-#### models.py / translator.py — validation boundary is split across two layers
+#### ~~models.py / translator.py — validation boundary is split across two layers~~ ✓
 
-`models.py` accepts empty prefixes, missing next-hop addresses, and empty VRF
-names. `translator.py` re-validates all of these and emits warnings. The
-responsibility for input validation is duplicated and the adapter's actual
-acceptance boundary is only visible by reading both files together.
+`VrfSpec.from_dict()` now raises `ValueError` immediately for an empty VRF
+name, making the models layer the primary rejection point for that case.
+Remaining translator-side guards are kept as a defence-in-depth layer for
+objects constructed directly (not via `from_dict`).
 
-#### models.py — protocol normalisation coupled to translator internals
+#### ~~models.py — protocol normalisation coupled to translator internals~~ ✓
 
-Protocols are normalised to lowercase with hyphens replaced by underscores
-(`tcp-udp` → `tcp_udp`) in `models.py`. `_first_protocol()` in `translator.py`
-expects exactly this form. The coupling is implicit and undocumented; a change
-to one side breaks the other without a type error.
+`translator.py` now exposes `_SUPPORTED_PROTOCOLS` as a module-level
+`frozenset` with an explicit comment documenting the coupling to the
+`models.py` normalisation step. A cross-reference comment in `models.py`
+points back to `_SUPPORTED_PROTOCOLS`, making the contract visible without
+reading both files in full.
 
-#### k8s_resources.py — CRD plural names are hardcoded
+#### ~~k8s_resources.py — CRD plural names are hardcoded~~ ✓
 
-`kind_to_plural()` contains two hardcoded entries. Adding support for a new
-CRD kind requires modifying this function directly. There is no registration
-mechanism or configuration path.
+`SUPPORTED_CUSTOM_RESOURCES` is now a mutable list and `register_resource()`
+is exposed as a public function. Callers can add or replace a CRD kind at
+runtime without modifying `k8s_resources.py`.
 
 ---
 
