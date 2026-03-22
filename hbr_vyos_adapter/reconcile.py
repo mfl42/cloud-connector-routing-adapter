@@ -154,27 +154,41 @@ def reconcile_documents(
     apply_performed = False
     vyos_response: dict | None = None
     if apply and pending_states:
+        apply_succeeded = True
         if pending_commands:
             if client is None:
                 raise ValueError("apply=True requires a VyosApiClient when commands must be sent")
             vyos_response = client.configure_commands(pending_commands)
             apply_performed = True
-        applied_at = _utc_now()
-        for key, desired_revision, desired_digest, desired_commands in pending_states:
-            entry = state.documents[key]
-            entry.applied_revision = desired_revision
-            entry.applied_digest = desired_digest
-            entry.applied_commands = desired_commands
-            entry.last_applied_at = applied_at
-            entry.last_result = "applied"
-            entry.last_error = None
+            apply_succeeded = vyos_response.get("success", True)
 
-        for item in doc_results:
-            if item.changed:
-                item.applied_revision = item.desired_revision
-                item.applied_digest = item.desired_digest
-                item.in_sync = True
-                item.action = "applied"
+        if apply_succeeded:
+            applied_at = _utc_now()
+            for key, desired_revision, desired_digest, desired_commands in pending_states:
+                entry = state.documents[key]
+                entry.applied_revision = desired_revision
+                entry.applied_digest = desired_digest
+                entry.applied_commands = desired_commands
+                entry.last_applied_at = applied_at
+                entry.last_result = "applied"
+                entry.last_error = None
+
+            for item in doc_results:
+                if item.changed:
+                    item.applied_revision = item.desired_revision
+                    item.applied_digest = item.desired_digest
+                    item.in_sync = True
+                    item.action = "applied"
+        else:
+            error_msg = str(vyos_response.get("error") or "VyOS apply failed")
+            for key, _, _, _ in pending_states:
+                entry = state.documents[key]
+                entry.last_result = "apply-failed"
+                entry.last_error = error_msg
+
+            for item in doc_results:
+                if item.changed:
+                    item.action = "apply-failed"
 
     state.save(state_file)
     if status_file:

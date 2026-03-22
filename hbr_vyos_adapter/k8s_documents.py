@@ -220,7 +220,10 @@ class KubeDocumentClient:
         for line in response.iter_lines(decode_unicode=True):
             if not line:
                 continue
-            payload = json.loads(line)
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
             event_type = payload.get("type")
             if event_type == "ERROR":
                 if _is_stale_watch_event(payload):

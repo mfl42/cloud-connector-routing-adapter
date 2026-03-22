@@ -88,8 +88,7 @@ class ReconcileState:
 
     def save(self, path: str | Path) -> None:
         state_path = Path(path)
-        if state_path.parent != Path("."):
-            state_path.parent.mkdir(parents=True, exist_ok=True)
+        state_path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "documents": {
                 key: value.to_dict()
