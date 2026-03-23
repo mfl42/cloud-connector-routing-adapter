@@ -256,12 +256,62 @@ Per-document conditions patched to Kubernetes status subresource:
 - Exponential backoff on errors (0.2s → 30s)
 - Periodic full resync (30min default)
 
+## Layer2 / VXLAN / EVPN
+
+### Layer2 Domains (`spec.layer2s.<name>`)
+
+Each layer2 entry creates a VXLAN interface and a bridge domain:
+
+- `vni` — `set interfaces vxlan vxlan<VNI> vni '<vni>'` **[required]**
+- `mtu` — `set interfaces vxlan vxlan<VNI> mtu '<mtu>'` **[required]**
+- `vlan` — bridge name derived as `br<VLAN>` **[required]**
+- `routeTarget` — L2 route target (not yet bound to VyOS L2 RT config)
+- VXLAN parameters: `set interfaces vxlan vxlan<VNI> parameters nolearning` (implicit)
+- Bridge-VXLAN binding: `set interfaces bridge br<VLAN> member interface vxlan<VNI>`
+
+IRB (Integrated Routing and Bridging) — when `irb` is present:
+
+- `irb.ipAddresses[]` — `set interfaces bridge br<VLAN> address '<ip/prefix>'`
+- `irb.macAddress` — `set interfaces bridge br<VLAN> mac '<mac>'`
+- `irb.vrf` — `set interfaces bridge br<VLAN> vrf '<vrf>'`
+
+Mirror ACLs: detected and surfaced as unsupported (GRE mirroring is VyOS-version-dependent).
+
+### Fabric VRF EVPN (`spec.fabricVRFs.<name>`)
+
+When a fabric VRF has EVPN fields (vni, route targets, or export filter):
+
+- `vni` — `set vrf name '<vrf>' vni '<vni>'`
+- l2vpn-evpn activation: `set vrf name '<vrf>' protocols bgp address-family l2vpn-evpn`
+- advertise-all-vni: emitted implicitly when EVPN fields present
+- `evpnExportRouteTargets[]` — `set ... l2vpn-evpn route-target export '<rt>'`
+- `evpnImportRouteTargets[]` — `set ... l2vpn-evpn route-target import '<rt>'`
+- `evpnExportFilter` — compiled into VyOS route-map (same engine as BGP peer filters),
+  bound via `route-map export '<name>'`
+- `vrfImports[].fromVrf` — `set ... l2vpn-evpn import vrf '<from>'`
+- `vrfImports[].filter` — compiled into VyOS route-map for the import
+
+### EVPN Limitations and Design Decisions
+
+- **VTEP source-address**: not in the CRD (it's a per-node property, not per-document).
+  VyOS uses the loopback or default route as VXLAN source. For explicit control,
+  use `--vtep-source-address` CLI parameter (future) or configure the loopback in
+  the fabric VRF.
+- **Route Distinguisher**: absent from CRD. VyOS auto-generates (`<router-id>:<vni>`).
+- **advertise-all-vni**: no CRD flag — emitted implicitly when EVPN route targets are present.
+- **Bridge member physical interfaces**: not in CRD. Physical interfaces are attached
+  via the VRF `interfaces[]` field; bridge membership is limited to the VXLAN interface.
+- **mirrorAcls**: surfaced as unsupported (GRE encapsulation for traffic mirroring is
+  VyOS-version-dependent and not yet mapped).
+- **l2vpn-evpn address family**: recognized in `addressFamilies` for BGP peers (alongside
+  `ipv4-unicast` and `ipv6-unicast`).
+
 ## Unsupported Areas
 
 The following are not mapped yet:
 
-- `layer2s` / EVPN / VNI / VXLAN constructs (deferred — upstream API unstable)
 - Simple string route-map references (`routeMap`, `prefixList`, `distributionList`)
+- `mirrorAcls` GRE traffic mirroring
 - Full CRA rollout orchestration
 - Per-interface readiness
 - Exact host-netplan parity

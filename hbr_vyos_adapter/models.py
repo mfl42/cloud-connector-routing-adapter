@@ -308,6 +308,91 @@ class BgpPeer:
 
 
 @dataclass(slots=True)
+class Layer2Irb:
+    ip_addresses: list[str] = field(default_factory=list)
+    mac_address: str | None = None
+    vrf: str | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "Layer2Irb":
+        data = _mapping_or_raise(data, "irb")
+        return cls(
+            ip_addresses=_string_list(data.get("ipAddresses")),
+            mac_address=_string_or_none(data.get("macAddress")),
+            vrf=_string_or_none(data.get("vrf")),
+        )
+
+
+@dataclass(slots=True)
+class MirrorAcl:
+    destination_address: str
+    destination_vrf: str
+    encapsulation_type: str
+    src_prefix: str | None = None
+    dst_prefix: str | None = None
+    protocol: str | None = None
+    src_port: int | None = None
+    dst_port: int | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "MirrorAcl":
+        data = _mapping_or_raise(data, "mirrorAcl")
+        match = _mapping_or_raise(data.get("trafficMatch"), "trafficMatch", allow_none=True)
+        return cls(
+            destination_address=data.get("destinationAddress", ""),
+            destination_vrf=data.get("destinationVrf", ""),
+            encapsulation_type=data.get("encapsulationType", "gre"),
+            src_prefix=match.get("srcPrefix"),
+            dst_prefix=match.get("dstPrefix"),
+            protocol=match.get("protocol"),
+            src_port=_int_or_none(match.get("srcPort")),
+            dst_port=_int_or_none(match.get("dstPort")),
+        )
+
+
+@dataclass(slots=True)
+class Layer2Spec:
+    name: str
+    vni: int
+    vlan: int
+    mtu: int
+    route_target: str
+    irb: Layer2Irb | None = None
+    mirror_acls: list[MirrorAcl] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, name: str, data: dict[str, Any]) -> "Layer2Spec":
+        data = _mapping_or_raise(data, f"layer2 {name}")
+        irb_raw = data.get("irb")
+        irb = Layer2Irb.from_dict(irb_raw) if isinstance(irb_raw, dict) else None
+        acls_raw = data.get("mirrorAcls") or []
+        return cls(
+            name=name,
+            vni=_int_or_none(data.get("vni")) or 0,
+            vlan=_int_or_none(data.get("vlan")) or 0,
+            mtu=_int_or_none(data.get("mtu")) or 1500,
+            route_target=data.get("routeTarget", ""),
+            irb=irb,
+            mirror_acls=[MirrorAcl.from_dict(a) for a in acls_raw if isinstance(a, dict)],
+        )
+
+
+@dataclass(slots=True)
+class VrfImport:
+    from_vrf: str
+    filter: BgpFilter | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "VrfImport":
+        data = _mapping_or_raise(data, "vrfImport")
+        filter_raw = data.get("filter")
+        return cls(
+            from_vrf=data.get("fromVrf", ""),
+            filter=BgpFilter.from_dict(filter_raw) if isinstance(filter_raw, dict) else None,
+        )
+
+
+@dataclass(slots=True)
 class VrfSpec:
     name: str
     table: int | None = None
@@ -317,6 +402,11 @@ class VrfSpec:
     interfaces: list[str] = field(default_factory=list)
     policy_routes: list[PolicyRoute] = field(default_factory=list)
     static_routes: list[StaticRoute] = field(default_factory=list)
+    vni: int | None = None
+    evpn_export_route_targets: list[str] = field(default_factory=list)
+    evpn_import_route_targets: list[str] = field(default_factory=list)
+    evpn_export_filter: BgpFilter | None = None
+    vrf_imports: list[VrfImport] = field(default_factory=list)
     raw: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -354,6 +444,9 @@ class VrfSpec:
             or _first_value(bgp_data, "routerId", "router-id", "routerID")
         )
 
+        evpn_export_filter_raw = data.get("evpnExportFilter")
+        vrf_imports_raw = data.get("vrfImports") or []
+
         return cls(
             name=name,
             table=_int_or_none(data.get("table")),
@@ -369,6 +462,18 @@ class VrfSpec:
                 StaticRoute.from_dict(item)
                 for item in _list_or_raise(data.get("staticRoutes"), f"vrf {name}.staticRoutes")
             ],
+            vni=_int_or_none(data.get("vni")),
+            evpn_export_route_targets=_string_list(data.get("evpnExportRouteTargets")),
+            evpn_import_route_targets=_string_list(data.get("evpnImportRouteTargets")),
+            evpn_export_filter=(
+                BgpFilter.from_dict(evpn_export_filter_raw)
+                if isinstance(evpn_export_filter_raw, dict) else None
+            ),
+            vrf_imports=[
+                VrfImport.from_dict(item)
+                for item in vrf_imports_raw
+                if isinstance(item, dict)
+            ],
             raw=data,
         )
 
@@ -382,7 +487,7 @@ class NodeNetworkConfig:
     cluster_vrf: VrfSpec | None
     fabric_vrfs: dict[str, VrfSpec]
     local_vrfs: dict[str, VrfSpec]
-    layer2s: dict[str, Any]
+    layer2s: dict[str, Layer2Spec]
     raw: dict[str, Any]
 
     @classmethod
@@ -421,7 +526,11 @@ class NodeNetworkConfig:
             cluster_vrf=cluster_vrf,
             fabric_vrfs=fabric_vrfs,
             local_vrfs=local_vrfs,
-            layer2s=spec.get("layer2s") or {},
+            layer2s={
+                name: Layer2Spec.from_dict(name, value)
+                for name, value in (spec.get("layer2s") or {}).items()
+                if isinstance(value, dict)
+            },
             raw=data,
         )
 

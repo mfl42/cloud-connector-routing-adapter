@@ -436,16 +436,22 @@ Kubernetes Lease-based leader election using `coordination.k8s.io/v1` Lease API.
 
 ---
 
-### 9 — L2 / VNI — VXLAN + EVPN (very high / low priority)
+### ~~9 — L2 / VNI — VXLAN + EVPN~~ ✓
 
-`spec.layer2s` in `NodeNetworkConfig` is detected and surfaced as unsupported.
-No translation is attempted.
+Layer2 domains and EVPN fabric VRF configuration are now translated:
 
-VXLAN interface creation (`set interfaces vxlan vxlan<n> ...`), VNI-to-VRF
-binding, and EVPN address-family activation under BGP are all absent.
+- **Layer2** (`spec.layer2s`): VXLAN interface (`vni`, `mtu`, `nolearning`), bridge
+  domain (`br<VLAN>`), VXLAN-to-bridge binding, IRB (IP addresses, MAC, VRF attachment)
+- **EVPN on fabricVRFs**: VNI-to-VRF binding, l2vpn-evpn address-family activation,
+  `advertise-all-vni`, route targets (export/import), EVPN export filter compiled
+  into route-map, VRF imports with per-import filter
+- **l2vpn-evpn** recognized as a BGP address family for peer activation
+- New models: `Layer2Spec`, `Layer2Irb`, `MirrorAcl`, `VrfImport`; `VrfSpec` extended
+  with `vni`, `evpn_export_route_targets`, `evpn_import_route_targets`,
+  `evpn_export_filter`, `vrf_imports`
 
-Deferred until the upstream `network-connector` API stabilises (merge into
-sylva-core in progress — API group and field names may change).
+Limitations documented in MAPPING.md: VTEP source-address not in CRD (VyOS uses
+loopback), Route Distinguisher auto-generated, mirrorAcls surfaced as unsupported.
 
 ---
 
