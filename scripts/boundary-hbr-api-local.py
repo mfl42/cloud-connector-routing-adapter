@@ -66,7 +66,9 @@ def scenario_interface_boundaries() -> dict:
     assert "set vrf name 'edge-a' table '1'" in result.commands, result.commands
     assert "set interfaces ethernet eth1 vrf 'edge-a'" in result.commands, result.commands
     assert any("tracking HBR revision boundary-interfaces-1" == warning for warning in result.warnings)
-    assert any("loopback" in item for item in result.unsupported), result.unsupported
+    # `lo` is no longer a named type in the translator; both lo and myst0 fall
+    # through to the generic "unknown interface family" unsupported message.
+    assert any("interface lo" in item for item in result.unsupported), result.unsupported
     assert any("unknown interface family" in item for item in result.unsupported), result.unsupported
 
     return {
@@ -232,7 +234,9 @@ def scenario_bgp_boundaries() -> dict:
     assert any("missing remote-as" in warning for warning in result.warnings), result.warnings
     assert any("without an address" in warning for warning in result.warnings), result.warnings
     assert any("unsupported address families: bogus-af" in item for item in result.unsupported), result.unsupported
-    assert any("unsupported fields: holdTime" in item for item in result.unsupported), result.unsupported
+    # holdTime is now a recognised timer field; a solo holdtime (no keepalive)
+    # produces a warning rather than an unsupported entry.
+    assert any("only one of keepalive/holdtime" in warning for warning in result.warnings), result.warnings
 
     return {
         "scenario": "bgp-boundaries",
