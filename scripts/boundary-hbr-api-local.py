@@ -1194,6 +1194,159 @@ def scenario_leader_election_boundaries() -> dict:
     }
 
 
+def scenario_bgp_filter_edge_cases() -> dict:
+    """Edge cases for BGP importFilter/exportFilter compilation."""
+    scenario_dir = ARTIFACT_DIR / "bgp-filter-edge-cases"
+    reset_dir(scenario_dir)
+
+    document = load_document({
+        "apiVersion": "network.t-caas.telekom.com/v1alpha1",
+        "kind": "NodeNetworkConfig",
+        "metadata": {"name": "filter-edge-node"},
+        "spec": {
+            "revision": "filter-edge-1",
+            "localVRFs": {
+                "edge-vrf": {
+                    "table": 500,
+                    "localASN": 65000,
+                    "bgpPeers": [
+                        {
+                            # Peer 1: empty matchers, "next" action, ge > le
+                            "address": "192.0.2.1",
+                            "remoteASN": 65010,
+                            "addressFamilies": ["ipv4-unicast"],
+                            "ipv4": {
+                                "importFilter": {
+                                    "defaultAction": {"type": "next"},
+                                    "items": [
+                                        {
+                                            # Item with no matchers (action only)
+                                            "action": {"type": "accept"},
+                                            "matcher": {},
+                                        },
+                                        {
+                                            # Item with empty prefix string
+                                            "action": {"type": "accept"},
+                                            "matcher": {"prefix": {"prefix": ""}},
+                                        },
+                                        {
+                                            # Item with empty community string
+                                            "action": {"type": "reject"},
+                                            "matcher": {"bgpCommunity": {"community": ""}},
+                                        },
+                                        {
+                                            # Item with ge > le (invalid range)
+                                            "action": {"type": "accept"},
+                                            "matcher": {"prefix": {"prefix": "10.0.0.0/8", "ge": 32, "le": 16}},
+                                        },
+                                        {
+                                            # Conflicting communities: removeAll + add
+                                            "action": {
+                                                "type": "accept",
+                                                "modifyRoute": {
+                                                    "removeAllCommunities": True,
+                                                    "addCommunities": ["65000:999"],
+                                                },
+                                            },
+                                            "matcher": {"prefix": {"prefix": "172.16.0.0/12"}},
+                                        },
+                                    ],
+                                },
+                            },
+                        },
+                        {
+                            # Peer 2: export filter with only default action (no items)
+                            "address": "192.0.2.2",
+                            "remoteASN": 65020,
+                            "addressFamilies": ["ipv4-unicast"],
+                            "ipv4": {
+                                "exportFilter": {
+                                    "defaultAction": {"type": "accept"},
+                                },
+                            },
+                        },
+                    ],
+                }
+            },
+        },
+    })
+
+    result = VyosTranslator().translate(document)
+    write_json(scenario_dir / "translation.json", {
+        "commands": result.commands,
+        "warnings": result.warnings,
+        "unsupported": result.unsupported,
+    })
+
+    # "next" default action → maps to "deny" (VyOS has no "next" action)
+    import_map = "hbr-edge-vrf-192.0.2.1-ipv4-import"
+    assert any(
+        f"route-map '{import_map}' rule '65535' action 'deny'" in c
+        for c in result.commands
+    ), "default action 'next' should map to 'deny'"
+
+    # Item with no matchers: still generates a rule with action but no match clause
+    assert any(
+        f"route-map '{import_map}' rule '10' action 'permit'" in c
+        for c in result.commands
+    ), "action-only item should generate a route-map rule"
+    # No prefix-list for rule 10 (no matcher)
+    assert not any(
+        f"{import_map}-r10" in c and "prefix-list" in c
+        for c in result.commands
+    ), "action-only item should not generate prefix-list"
+
+    # Empty prefix string → not emitted (prefix is falsy)
+    assert not any(
+        f"{import_map}-r20" in c and "prefix ''" in c
+        for c in result.commands
+    ), "empty prefix should not generate prefix-list"
+
+    # Empty community string → not emitted (community is falsy)
+    assert not any(
+        f"{import_map}-cl-r30" in c and "regex ''" in c
+        for c in result.commands
+    ), "empty community should not generate community-list"
+
+    # ge > le: still generates prefix-list (VyOS will reject, but we emit)
+    assert any(
+        f"{import_map}-r40" in c and "ge '32'" in c
+        for c in result.commands
+    ), "ge > le prefix-list should still be emitted"
+
+    # Conflicting communities: removeAll takes precedence (elif branch)
+    conflicting_cmds = [c for c in result.commands if f"{import_map}' rule '50'" in c]
+    has_none = any("set community 'none'" in c for c in conflicting_cmds)
+    has_add = any("set community '65000:999'" in c for c in conflicting_cmds)
+    # removeAllCommunities is checked first in the code → "set community 'none'" is emitted
+    # then addCommunities is also emitted (separate if block)
+    assert has_none, "removeAllCommunities should emit 'set community none'"
+
+    # Export-only filter with no items → only default rule 65535
+    export_map = "hbr-edge-vrf-192.0.2.2-ipv4-export"
+    export_cmds = [c for c in result.commands if export_map in c]
+    assert len(export_cmds) >= 1, "export-only filter should have at least default rule"
+    assert any("rule '65535' action 'permit'" in c for c in export_cmds)
+    # No rule 10 for export (no items)
+    assert not any("rule '10'" in c for c in export_cmds), "no items → no rule 10"
+
+    # No crash — that's the primary assertion for all these edge cases
+    return {
+        "scenario": "bgp-filter-edge-cases",
+        "commandCount": len(result.commands),
+        "warningCount": len(result.warnings),
+        "edgeCases": [
+            "action-next-default",
+            "action-only-item",
+            "empty-prefix",
+            "empty-community",
+            "ge-gt-le",
+            "conflicting-communities",
+            "export-only-default",
+        ],
+    }
+
+
 def main() -> int:
     ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
     summaries = [
@@ -1211,6 +1364,7 @@ def main() -> int:
         scenario_cra_status_conditions(),
         scenario_bgp_route_map_compilation(),
         scenario_leader_election_boundaries(),
+        scenario_bgp_filter_edge_cases(),
     ]
     summary = {
         "scenarioCount": len(summaries),

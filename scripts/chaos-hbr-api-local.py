@@ -1052,6 +1052,128 @@ def scenario_informer_event_queue() -> dict:
     }
 
 
+class CrashingLeaseManager(LeaseManager):
+    """Lease manager that crashes on acquire()."""
+
+    def __init__(self) -> None:
+        self._calls = 0
+
+    def acquire(self) -> bool:
+        self._calls += 1
+        raise RuntimeError("Kubernetes API unreachable during lease acquisition")
+
+    @property
+    def is_leader(self) -> bool:
+        return False
+
+    @property
+    def holder_identity(self) -> str:
+        return "crash-pod"
+
+
+def scenario_lease_acquire_exception() -> dict:
+    """Controller survives when lease_manager.acquire() raises an exception."""
+    scenario_dir = ARTIFACT_DIR / "lease-acquire-exception"
+    reset_dir(scenario_dir)
+    state_file = scenario_dir / "state.json"
+    status_file = scenario_dir / "status.json"
+
+    network_base, netplan_base = load_base_documents()
+    network = clone_network_config(
+        network_base, revision="chaos-lease-crash-1", generation=90, resource_version="2000"
+    )
+
+    crashing_lease = CrashingLeaseManager()
+    vyos_client = ScriptedVyosClient([{"success": True}])
+
+    result = run_controller(
+        source=StaticSource([network]),
+        state_file=str(state_file),
+        status_file=str(status_file),
+        once=True,
+        apply=True,
+        vyos_client=vyos_client,
+        write_status=True,
+        status_writer=ScriptedStatusWriter([]),
+        lease_manager=crashing_lease,
+    )
+
+    # Controller should NOT crash — exception caught by iteration error handler
+    assert result.iterations[0].ok is False, "should be marked as failed"
+    assert "unreachable" in (result.iterations[0].error or "").lower(), result.iterations[0].error
+    assert len(vyos_client.calls) == 0, "no VyOS calls on lease exception"
+
+    return {
+        "scenario": "lease-acquire-exception",
+        "iteration_ok": result.iterations[0].ok,
+        "error_captured": bool(result.iterations[0].error),
+        "vyos_calls": len(vyos_client.calls),
+    }
+
+
+def scenario_lease_renewal_multi_cycle() -> dict:
+    """Leader keeps lease across multiple iterations; then loses it."""
+    scenario_dir = ARTIFACT_DIR / "lease-renewal-multi-cycle"
+    reset_dir(scenario_dir)
+    state_file = scenario_dir / "state.json"
+    status_file = scenario_dir / "status.json"
+
+    network_base, netplan_base = load_base_documents()
+    network = clone_network_config(
+        network_base, revision="chaos-renewal-1", generation=91, resource_version="2100"
+    )
+    netplan = clone_netplan_config(
+        netplan_base, generation=91, resource_version="2200",
+        nameservers=["192.0.2.53"],
+    )
+
+    nnc_key = _document_key(network)
+    nnpc_key = _document_key(netplan)
+
+    # 3 iterations: leader, leader, not-leader
+    lease = FakeLeaseManager([True, True, False])
+    updates = [
+        SourceUpdate(documents=[], changed_keys=set(), current_keys={nnc_key, nnpc_key}),
+        SourceUpdate(documents=[], changed_keys=set(), current_keys={nnc_key, nnpc_key}),
+    ]
+    source = ScriptedSource([network, netplan], updates)
+    vyos_client = ScriptedVyosClient([
+        {"success": True, "operations": [{"success": True}]},
+    ])
+    status_writer = ScriptedStatusWriter([None, None, None])
+
+    result = run_controller(
+        source=source,
+        state_file=str(state_file),
+        status_file=str(status_file),
+        interval_seconds=0.01,
+        once=False,
+        max_iterations=3,
+        apply=True,
+        vyos_client=vyos_client,
+        write_status=True,
+        status_writer=status_writer,
+        lease_manager=lease,
+    )
+    write_json(scenario_dir / "result.json", result.to_dict())
+
+    assert len(result.iterations) == 3, result.to_dict()
+    # Iteration 1: leader → apply
+    assert result.iterations[0].apply_performed is True, result.iterations[0].to_dict()
+    # Iteration 2: leader, no changes → noop (no new commands)
+    assert result.iterations[1].ok is True
+    # Iteration 3: not leader → apply suppressed
+    assert result.iterations[2].apply_performed is False, result.iterations[2].to_dict()
+    assert lease.acquire_calls == 3, f"expected 3 acquire calls, got {lease.acquire_calls}"
+
+    return {
+        "scenario": "lease-renewal-multi-cycle",
+        "iterations": len(result.iterations),
+        "acquire_calls": lease.acquire_calls,
+        "applied": [i.apply_performed for i in result.iterations],
+    }
+
+
 def main() -> int:
     if len(sys.argv) > 1 and sys.argv[1] not in {"run"}:
         print("usage: chaos-hbr-api-local.py [run]", file=sys.stderr)
@@ -1070,6 +1192,8 @@ def main() -> int:
         scenario_route_map_apply_failure_and_retry(),
         scenario_leader_election_skip_apply(),
         scenario_informer_event_queue(),
+        scenario_lease_acquire_exception(),
+        scenario_lease_renewal_multi_cycle(),
     ]
     summary = {
         "scenarioCount": len(summaries),
