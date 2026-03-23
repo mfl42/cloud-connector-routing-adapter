@@ -8,7 +8,7 @@ Run the local boundary harness with:
 python3 scripts/boundary-hbr-api-local.py
 ```
 
-## Scenarios (16)
+## Scenarios (17)
 
 1. **interface-boundaries** — supported Ethernet, unknown family rejection,
    VLAN sub-interface handling
@@ -45,6 +45,9 @@ python3 scripts/boundary-hbr-api-local.py
 16. **evpn-vxlan-layer2** — fabric VRF EVPN (vni, route targets,
     advertise-all-vni, export filter, VRF import), Layer2 VXLAN + bridge +
     IRB, l2vpn-evpn address family
+17. **api-autodiscovery** — activate_all_known_variants registration,
+    idempotent, _get_json_safe 404 tolerance, URL construction t-caas vs
+    sylva.io API groups
 
 ## Artifacts
 

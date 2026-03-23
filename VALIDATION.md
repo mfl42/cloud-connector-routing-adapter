@@ -9,7 +9,7 @@ questions:
 - what failed during development and was corrected
 - what is still outside the current stability claim
 
-The current report reflects the branch state as of March 23, 2026 (main after PR #34 — L2/VNI VXLAN + EVPN).
+The current report reflects the branch state as of March 23, 2026 (main after PR #38 — API auto-discovery tests). All 9 ROADMAP items are completed. See ROADMAP.md for current limitations and next steps.
 
 ## Scope Of The Stability Claim
 
