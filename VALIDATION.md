@@ -9,7 +9,7 @@ questions:
 - what failed during development and was corrected
 - what is still outside the current stability claim
 
-The current report reflects the branch state as of March 23, 2026 (main after PR #28 — BGP route-map compilation).
+The current report reflects the branch state as of March 23, 2026 (main after PR #30 — leader election + informer loop).
 
 ## Scope Of The Stability Claim
 
@@ -137,6 +137,27 @@ python3 scripts/fuzz-hbr-api-local.py --iterations 30
 ```
 
 Results: identical to `main` — boundary `7/7`, chaos `4/4`, fuzz `30/30`
+
+---
+
+### 2026-03-23 — Leader election + informer loop
+
+Context:
+
+- ROADMAP item #7: Kubernetes Lease-based leader election (non-leaders skip apply)
+- ROADMAP item #8: background informer watch thread with event queue, exponential backoff, periodic resync
+
+Branches tested: `feat/leader-election-informer-loop` → `dev` → `main` (PR #29, #30)
+
+Commands:
+
+```bash
+python3 scripts/boundary-hbr-api-local.py
+python3 scripts/chaos-hbr-api-local.py
+python3 scripts/fuzz-hbr-api-local.py --iterations 120
+```
+
+Results: boundary `14/14`, chaos `10/10`, fuzz `120/120`
 
 ---
 
