@@ -1,0 +1,159 @@
+name: Sylva upstream sync
+
+on:
+  schedule:
+    # Every Monday at 07:00 UTC
+    - cron: "0 7 * * 1"
+  workflow_dispatch:
+    inputs:
+      force_pr:
+        description: "Open a PR even if no drift is detected"
+        required: false
+        default: "false"
+      upstream_branch:
+        description: "Sylva upstream branch to check against"
+        required: false
+        default: "main"
+
+jobs:
+  # ── 1. Detect drift between local CRDs and upstream Sylva ─────────────────
+  drift-check:
+    name: Check Sylva CRD drift
+    runs-on: [self-hosted, venus]
+    outputs:
+      drift: ${{ steps.drift.outputs.drift }}
+      summary: ${{ steps.drift.outputs.summary }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: pip install pyyaml
+
+      - name: Run drift check
+        id: drift
+        env:
+          SYLVA_GITLAB_TOKEN: ${{ secrets.SYLVA_GITLAB_TOKEN }}
+        run: |
+          python3 scripts/check-sylva-drift.py \
+            --output /tmp/sylva-drift-report.json \
+            ${SYLVA_GITLAB_TOKEN:+--token "$SYLVA_GITLAB_TOKEN"}
+
+          # Read drift flag from report
+          DRIFT=$(python3 -c "import json; d=json.load(open('/tmp/sylva-drift-report.json')); print('true' if d['drift'] else 'false')" 2>/dev/null || echo "false")
+          SUMMARY=$(python3 -c "
+          import json
+          d = json.load(open('/tmp/sylva-drift-report.json'))
+          lines = []
+          for item in d.get('diffs', []):
+              lines.append(f\"{item['kind']}: {', '.join(item['changes'][:3])}\")
+          print(' | '.join(lines) if lines else 'none')
+          " 2>/dev/null || echo "check failed")
+
+          echo "drift=$DRIFT" >> "$GITHUB_OUTPUT"
+          echo "summary=$SUMMARY" >> "$GITHUB_OUTPUT"
+          echo "Drift: $DRIFT — $SUMMARY"
+
+      - name: Upload drift report
+        uses: actions/upload-artifact@v4
+        with:
+          name: sylva-drift-report
+          path: /tmp/sylva-drift-report.json
+
+  # ── 2. Sync upstream CRDs into local k8s/crds/ ───────────────────────────
+  sync-crds:
+    name: Sync upstream CRDs
+    runs-on: [self-hosted, venus]
+    needs: drift-check
+    if: needs.drift-check.outputs.drift == 'true' || github.event.inputs.force_pr == 'true'
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.name "hbr-sync-bot"
+          git config user.email "hbr-sync-bot@users.noreply.github.com"
+
+      - name: Create sync branch
+        run: |
+          BRANCH="chore/sylva-upstream-sync-$(date +%Y%m%d)"
+          git checkout -b "$BRANCH"
+          echo "SYNC_BRANCH=$BRANCH" >> "$GITHUB_ENV"
+
+      - name: Fetch and apply upstream CRDs
+        env:
+          SYLVA_GITLAB_TOKEN: ${{ secrets.SYLVA_GITLAB_TOKEN }}
+          UPSTREAM_BRANCH: ${{ github.event.inputs.upstream_branch || 'main' }}
+        run: |
+          python3 - << 'PYEOF'
+          import sys, urllib.request, urllib.error, yaml
+          from pathlib import Path
+
+          BASE = "https://gitlab.com/api/v4"
+          PROJECT = "sylva-projects%2Fsylva-elements"
+          BRANCH = "$UPSTREAM_BRANCH" or "main"
+          TOKEN = "$SYLVA_GITLAB_TOKEN"
+          CRD_MAP = {
+              "helm/charts/network-operator/crds/nodenetworkconfig.yaml":
+                  "k8s/crds/node-network-config-crd.yaml",
+              "helm/charts/network-operator/crds/nodenetplanconfig.yaml":
+                  "k8s/crds/node-netplan-config-crd.yaml",
+          }
+          headers = {"PRIVATE-TOKEN": TOKEN} if TOKEN else {}
+
+          updated = []
+          for upstream_path, local_path in CRD_MAP.items():
+              encoded = urllib.request.quote(upstream_path, safe="")
+              url = f"{BASE}/projects/{PROJECT}/repository/files/{encoded}/raw?ref={BRANCH}"
+              try:
+                  req = urllib.request.Request(url, headers=headers)
+                  with urllib.request.urlopen(req, timeout=15) as resp:
+                      content = resp.read().decode()
+                  Path(local_path).write_text(content)
+                  updated.append(local_path)
+                  print(f"Updated: {local_path}", file=sys.stderr)
+              except urllib.error.HTTPError as exc:
+                  print(f"Skip {upstream_path}: HTTP {exc.code}", file=sys.stderr)
+
+          print("\n".join(updated))
+          PYEOF
+
+      - name: Commit CRD updates
+        run: |
+          git add k8s/crds/
+          if git diff --cached --quiet; then
+            echo "No CRD file changes to commit."
+          else
+            git commit -m "chore(crds): sync from Sylva upstream $(date +%Y-%m-%d)"
+          fi
+
+      - name: Push sync branch
+        run: git push -u origin "$SYNC_BRANCH"
+
+      - name: Open sync PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DRIFT_SUMMARY: ${{ needs.drift-check.outputs.summary }}
+        run: |
+          gh pr create \
+            --title "chore(crds): Sylva upstream sync $(date +%Y-%m-%d)" \
+            --base main \
+            --head "$SYNC_BRANCH" \
+            --body "$(cat <<PREOF
+          ## Sylva upstream sync
+
+          Automated sync from [sylva-projects/sylva-elements](https://gitlab.com/sylva-projects/sylva-elements).
+
+          **Detected drift:** ${DRIFT_SUMMARY}
+
+          ### Review checklist
+
+          - [ ] CRD schema changes are backward-compatible
+          - [ ] New API versions require entries in \`k8s_resources.KNOWN_API_VARIANTS\`
+          - [ ] New spec fields need translator coverage or unsupported tracking
+          - [ ] Run \`bash scripts/check_examples.sh\` after merge
+          PREOF
+          )" || echo "PR may already exist for this branch"
