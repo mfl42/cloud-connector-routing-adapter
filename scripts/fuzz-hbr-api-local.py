@@ -258,8 +258,61 @@ def random_bgp_peers(rng: random.Random) -> list[dict]:
             peer["ebgpMultihop"] = rng.randint(1, 4)
         if rng.random() < 0.2:
             peer["holdTime"] = rng.randint(3, 90)
+        # Generate structured BGP filters ~40% of the time
+        if rng.random() < 0.4:
+            af_key = "ipv6" if is_v6 else "ipv4"
+            peer[af_key] = {}
+            if rng.random() < 0.7:
+                peer[af_key]["importFilter"] = random_bgp_filter(rng, is_v6)
+            if rng.random() < 0.5:
+                peer[af_key]["exportFilter"] = random_bgp_filter(rng, is_v6)
         peers.append(peer)
     return peers
+
+
+def random_bgp_filter(rng: random.Random, is_v6: bool) -> dict:
+    default_action_type = rng.choice(["accept", "reject", "next"])
+    bgp_filter: dict = {
+        "defaultAction": {"type": default_action_type},
+    }
+    items: list[dict] = []
+    for _ in range(rng.randint(0, 3)):
+        item: dict = {
+            "action": {"type": rng.choice(["accept", "reject"])},
+            "matcher": {},
+        }
+        # Prefix matcher
+        if rng.random() < 0.6:
+            family = 6 if is_v6 else 4
+            prefix = random_prefix(rng, family)
+            matcher: dict = {"prefix": prefix}
+            if rng.random() < 0.4:
+                matcher["ge"] = rng.randint(8, 32)
+            if rng.random() < 0.4:
+                matcher["le"] = rng.randint(8, 32)
+            item["matcher"]["prefix"] = matcher
+        # Community matcher
+        if rng.random() < 0.3:
+            asn = rng.choice([65000, 65010, 65100])
+            val = rng.randint(1, 999)
+            item["matcher"]["bgpCommunity"] = {
+                "community": f"{asn}:{val}",
+                "exactMatch": rng.random() < 0.5,
+            }
+        # Route modifications
+        if rng.random() < 0.3:
+            modify: dict = {}
+            if rng.random() < 0.5:
+                modify["addCommunities"] = [f"65000:{rng.randint(1, 999)}"]
+                modify["additiveCommunities"] = rng.random() < 0.5
+            if rng.random() < 0.3:
+                modify["removeAllCommunities"] = True
+            if modify:
+                item["action"]["modifyRoute"] = modify
+        items.append(item)
+    if items:
+        bgp_filter["items"] = items
+    return bgp_filter
 
 
 def random_policy_routes(rng: random.Random) -> list[dict]:
