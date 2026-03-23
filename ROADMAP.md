@@ -586,7 +586,7 @@ Potential future work, not yet scheduled. Ordered by operational value.
 
 ### Live validation on VyOS lab
 
-Run the adapter against the real VyOS VM (192.0.2.230) with the full
+Run the adapter against the real VyOS VM with the full
 command set including EVPN/VXLAN. Validate that generated commands are
 accepted and produce the expected configuration.
 

@@ -277,7 +277,7 @@ Limitations :
 ### Prochaines etapes possibles
 
 1. **Tests live sur le lab VyOS** — valider les commandes generees sur le
-   routeur reel (192.0.2.230), notamment EVPN/VXLAN
+   routeur reel VyOS du lab, notamment EVPN/VXLAN
 2. **CI/CD GitHub Actions** — automatiser les 3 suites de tests sur chaque PR
 3. **Suivi API upstream Sylva** — surveiller le renommage du groupe API lors
    de la fusion dans sylva-core
