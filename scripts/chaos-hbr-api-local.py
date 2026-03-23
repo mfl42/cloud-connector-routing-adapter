@@ -791,6 +791,105 @@ def scenario_cluster_scoped_status_wiring() -> dict:
     }
 
 
+def scenario_route_map_apply_failure_and_retry() -> dict:
+    """Route-map filter commands survive a commit failure + rollback cycle."""
+    scenario_dir = ARTIFACT_DIR / "route-map-apply-failure"
+    reset_dir(scenario_dir)
+    state_file = scenario_dir / "state.json"
+    status_file = scenario_dir / "status.json"
+
+    document = load_document({
+        "apiVersion": "network.t-caas.telekom.com/v1alpha1",
+        "kind": "NodeNetworkConfig",
+        "metadata": {"name": "filter-chaos-node"},
+        "spec": {
+            "revision": "chaos-filters-1",
+            "localVRFs": {
+                "chaos-vrf": {
+                    "table": 300,
+                    "localASN": 65000,
+                    "bgpPeers": [
+                        {
+                            "address": "192.0.2.10",
+                            "remoteASN": 65010,
+                            "addressFamilies": ["ipv4-unicast"],
+                            "ipv4": {
+                                "importFilter": {
+                                    "defaultAction": {"type": "reject"},
+                                    "items": [
+                                        {
+                                            "action": {"type": "accept"},
+                                            "matcher": {"prefix": {"prefix": "10.0.0.0/8"}},
+                                        }
+                                    ],
+                                },
+                            },
+                        }
+                    ],
+                }
+            },
+        },
+    })
+
+    # First apply: VyOS returns success=False
+    fail_client = ScriptedVyosClient([{"success": False, "error": "commit failed"}])
+    fail_result = run_controller(
+        source=StaticSource([document]),
+        state_file=str(state_file),
+        status_file=str(status_file),
+        once=True,
+        apply=True,
+        vyos_client=fail_client,
+        write_status=True,
+        status_writer=ScriptedStatusWriter([]),
+    )
+
+    assert fail_client.discard_calls == 1, fail_client.discard_calls
+    # route-map commands must have been in the batch
+    assert any("route-map" in c for batch in fail_client.calls for c in batch), fail_client.calls
+    assert any("prefix-list" in c for batch in fail_client.calls for c in batch), fail_client.calls
+
+    # Second apply: success
+    ok_client = ScriptedVyosClient([{"success": True, "operations": [{"success": True}]}])
+    ok_result = run_controller(
+        source=StaticSource([document]),
+        state_file=str(state_file),
+        status_file=str(status_file),
+        once=True,
+        apply=True,
+        vyos_client=ok_client,
+        write_status=True,
+        status_writer=ScriptedStatusWriter([]),
+    )
+
+    assert ok_result.iterations[0].ok, ok_result.to_dict()
+    assert ok_result.iterations[0].apply_performed, ok_result.to_dict()
+    # route-map commands present in the retry batch too
+    assert any("route-map" in c for batch in ok_client.calls for c in batch), ok_client.calls
+
+    # Third pass: noop
+    noop_client = ScriptedVyosClient([])
+    noop_result = run_controller(
+        source=StaticSource([document]),
+        state_file=str(state_file),
+        status_file=str(status_file),
+        once=True,
+        apply=True,
+        vyos_client=noop_client,
+        write_status=True,
+        status_writer=ScriptedStatusWriter([]),
+    )
+
+    assert noop_result.iterations[0].pending_command_count == 0, noop_result.to_dict()
+
+    return {
+        "scenario": "route-map-apply-failure-and-retry",
+        "discard_on_fail": fail_client.discard_calls,
+        "retry_applied": ok_result.iterations[0].apply_performed,
+        "noop_after_success": noop_result.iterations[0].pending_command_count == 0,
+    }
+
+
 def main() -> int:
     if len(sys.argv) > 1 and sys.argv[1] not in {"run"}:
         print("usage: chaos-hbr-api-local.py [run]", file=sys.stderr)
@@ -806,6 +905,7 @@ def main() -> int:
         scenario_commit_failure_rollback(),
         scenario_cluster_scoped_patch_url(),
         scenario_cluster_scoped_status_wiring(),
+        scenario_route_map_apply_failure_and_retry(),
     ]
     summary = {
         "scenarioCount": len(summaries),
