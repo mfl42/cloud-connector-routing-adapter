@@ -354,17 +354,15 @@ deletes, which may leave VyOS with a partially configured neighbor after commit.
 
 ---
 
-### 3 — Rollback on apply failure (medium / high priority)
+### ~~3 — Rollback on apply failure~~ ✓
 
-When a `/configure-list` call is accepted by VyOS but the subsequent commit
-fails, the adapter has no mechanism to roll back staged changes. A subsequent
-apply may encounter a partially staged configuration.
+When `configure_commands` returns `success: false`, `reconcile_documents` now
+calls `client.discard_pending()` immediately to clear any staged-but-uncommitted
+VyOS state. Applied state is not updated on failure. The next apply attempt
+therefore starts from a clean configuration baseline.
 
-Current behaviour: apply error is propagated; state is not updated; no
-rollback is attempted.
-
-Planned: invoke `rollback` via the VyOS API on detected commit failure, then
-re-attempt from a clean baseline.
+`ReconcileRunResult` exposes `rollback_performed` and `rollback_response` for
+observability.
 
 ---
 
