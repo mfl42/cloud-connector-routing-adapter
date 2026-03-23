@@ -9,7 +9,7 @@ questions:
 - what failed during development and was corrected
 - what is still outside the current stability claim
 
-The current report reflects the branch state as of March 23, 2026 (main after PR #22 — BGP regex fix, large topology test, rollback).
+The current report reflects the branch state as of March 23, 2026 (main after PR #24 — cluster-scoped wiring, CRA status conditions).
 
 ## Scope Of The Stability Claim
 
@@ -137,6 +137,27 @@ python3 scripts/fuzz-hbr-api-local.py --iterations 30
 ```
 
 Results: identical to `main` — boundary `7/7`, chaos `4/4`, fuzz `30/30`
+
+---
+
+### 2026-03-23 — cluster-scoped wiring + CRA status conditions
+
+Context:
+
+- Cluster-scoped source/status wiring verified end-to-end (`_resource_url()`, `cluster_scoped_status` forwarding)
+- `Reconciling`, `Degraded`, `Available` CRA conditions added per document status patch
+
+Branches tested: `feat/cluster-scoped-cra-status` → `dev` → `main` (PR #23, #24)
+
+Commands:
+
+```bash
+python3 scripts/boundary-hbr-api-local.py
+python3 scripts/chaos-hbr-api-local.py
+python3 scripts/fuzz-hbr-api-local.py --iterations 120
+```
+
+Results: boundary `12/12`, chaos `6/6`, fuzz `120/120`
 
 ---
 
