@@ -9,7 +9,7 @@ questions:
 - what failed during development and was corrected
 - what is still outside the current stability claim
 
-The current report reflects the branch state as of March 23, 2026 (feat/policy-route-nexthop-address).
+The current report reflects the branch state as of March 23, 2026 (main after PR #22 — BGP regex fix, large topology test, rollback).
 
 ## Scope Of The Stability Claim
 
@@ -137,6 +137,28 @@ python3 scripts/fuzz-hbr-api-local.py --iterations 30
 ```
 
 Results: identical to `main` — boundary `7/7`, chaos `4/4`, fuzz `30/30`
+
+---
+
+### 2026-03-23 — BGP regex fix, large topology test, rollback on apply failure
+
+Context:
+
+- BGP delete regex patched: `_Q` constant handles escaped single quotes in VRF/neighbor names
+- Large topology boundary scenario: 10 VRFs × 10 peers × 2 VLANs × 100 static routes → 1240 commands, noop on second reconcile
+- Rollback on apply failure: `discard_pending()` called when `configure_commands` returns `success: false`
+
+Branches tested: `feat/rollback-on-commit-failure` → `dev` → `main` (PR #21, #22)
+
+Commands:
+
+```bash
+python3 scripts/boundary-hbr-api-local.py
+python3 scripts/chaos-hbr-api-local.py
+python3 scripts/fuzz-hbr-api-local.py --iterations 120
+```
+
+Results: boundary `10/10`, chaos `5/5`, fuzz `120/120`
 
 ---
 
