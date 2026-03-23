@@ -54,6 +54,8 @@ class ReconcileRunResult:
     command_count: int
     documents: list[DocumentReconcileResult] = field(default_factory=list)
     vyos_response: dict | None = None
+    rollback_performed: bool = False
+    rollback_response: dict | None = None
     status_report: dict | None = None
 
     def to_dict(self) -> dict:
@@ -65,6 +67,8 @@ class ReconcileRunResult:
             "command_count": self.command_count,
             "documents": [item.to_dict() for item in self.documents],
             "vyos_response": self.vyos_response,
+            "rollback_performed": self.rollback_performed,
+            "rollback_response": self.rollback_response,
             "status_report": self.status_report,
         }
 
@@ -152,6 +156,8 @@ def reconcile_documents(
         )
 
     apply_performed = False
+    rollback_performed = False
+    rollback_response: dict | None = None
     vyos_response: dict | None = None
     if apply and pending_states:
         apply_succeeded = True
@@ -161,6 +167,12 @@ def reconcile_documents(
             vyos_response = client.configure_commands(pending_commands)
             apply_performed = True
             apply_succeeded = vyos_response.get("success", True)
+
+            if not apply_succeeded:
+                # Discard any staged-but-uncommitted changes so the next apply
+                # attempt starts from a clean VyOS configuration baseline.
+                rollback_response = client.discard_pending()
+                rollback_performed = True
 
         if apply_succeeded:
             applied_at = _utc_now()
@@ -203,6 +215,8 @@ def reconcile_documents(
         command_count=len(pending_commands),
         documents=doc_results,
         vyos_response=vyos_response,
+        rollback_performed=rollback_performed,
+        rollback_response=rollback_response,
         status_report=status_report,
     )
 
@@ -300,8 +314,10 @@ def _desired_revision(
     return f"digest-{_commands_digest(commands)[:12]}"
 
 
+_Q = r"'(?:[^'\\]|\\.)*'"  # single-quoted VyOS token, allowing escaped quotes
+
 _BGP_NEIGHBOR_RE = re.compile(
-    r"^set (vrf name '[^']+' protocols bgp neighbor '[^']+')(?:\s|$)"
+    r"^set (vrf name " + _Q + r" protocols bgp neighbor " + _Q + r")(?:\s|$)"
 )
 
 
@@ -337,16 +353,16 @@ def _compute_diff_deletes(removed_cmds: set[str], new_cmds: set[str]) -> list[st
 # command — specifying the value in a VyOS delete path is not valid for these.
 _SCALAR_LEAF_RE = re.compile(
     r"^set ("
-    r"vrf name '[^']+' table"
-    r"|vrf name '[^']+' protocols bgp system-as"
-    r"|vrf name '[^']+' protocols bgp parameters router-id"
-    r"|vrf name '[^']+' protocols bgp neighbor '[^']+' remote-as"
-    r"|vrf name '[^']+' protocols bgp neighbor '[^']+' update-source"
-    r"|vrf name '[^']+' protocols bgp neighbor '[^']+' ebgp-multihop"
-    r"|vrf name '[^']+' protocols bgp neighbor '[^']+' password"
-    r"|vrf name '[^']+' protocols bgp neighbor '[^']+' timers keepalive"
-    r"|vrf name '[^']+' protocols bgp neighbor '[^']+' timers holdtime"
-    r") '[^']+'\s*$"
+    + r"vrf name " + _Q + r" table"
+    + r"|vrf name " + _Q + r" protocols bgp system-as"
+    + r"|vrf name " + _Q + r" protocols bgp parameters router-id"
+    + r"|vrf name " + _Q + r" protocols bgp neighbor " + _Q + r" remote-as"
+    + r"|vrf name " + _Q + r" protocols bgp neighbor " + _Q + r" update-source"
+    + r"|vrf name " + _Q + r" protocols bgp neighbor " + _Q + r" ebgp-multihop"
+    + r"|vrf name " + _Q + r" protocols bgp neighbor " + _Q + r" password"
+    + r"|vrf name " + _Q + r" protocols bgp neighbor " + _Q + r" timers keepalive"
+    + r"|vrf name " + _Q + r" protocols bgp neighbor " + _Q + r" timers holdtime"
+    + r") " + _Q + r"\s*$"
 )
 
 
