@@ -446,6 +446,24 @@ class VyosTranslator:
         for family in families:
             result.commands.append(f"{peer_root} address-family {family}")
 
+        # Route-map / prefix-list / filter fields — recognised but not yet compiled
+        # into VyOS route-map objects. Surfaced as a dedicated unsupported marker.
+        _FILTER_KEYS = {
+            "routeMap", "inboundRouteMap", "outboundRouteMap",
+            "route-map", "inbound-route-map", "outbound-route-map",
+            "prefixList", "inboundPrefixList", "outboundPrefixList",
+            "prefix-list", "inbound-prefix-list", "outbound-prefix-list",
+            "distributionList", "distribution-list",
+            "community", "communities", "communityList",
+            "importFilter", "exportFilter",
+        }
+        filter_keys_present = sorted(k for k in peer.raw if k in _FILTER_KEYS)
+        if filter_keys_present:
+            result.unsupported.append(
+                f"vrf {vrf_name} BGP peer {peer.address} has route-map/filter fields "
+                f"({', '.join(filter_keys_present)}); route-map compilation not yet supported"
+            )
+
         unsupported_keys = sorted(
             key
             for key in peer.raw
@@ -486,7 +504,7 @@ class VyosTranslator:
                 "address_families",
                 "families",
                 "afiSafis",
-            }
+            } | _FILTER_KEYS
         )
         if unsupported_keys:
             result.unsupported.append(
