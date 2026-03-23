@@ -934,6 +934,14 @@ def scenario_cra_status_conditions() -> dict:
         last_result="apply-failed",
         last_error="commit failed",
     )
+    # Deleted: document torn down
+    state_deleted = make_state(
+        desired_revision="r5", desired_digest="d5",
+        applied_revision="r5", applied_digest="d5",
+        last_result="torn-down",
+        deleted=True,
+        deleted_at=now,
+    )
 
     results = {}
     for label, state in (
@@ -941,6 +949,7 @@ def scenario_cra_status_conditions() -> dict:
         ("pending", state_pending),
         ("drifted", state_drifted),
         ("error", state_error),
+        ("deleted", state_deleted),
     ):
         report = build_status_report(state, now=now)
         doc = report.documents[0]
@@ -971,6 +980,13 @@ def scenario_cra_status_conditions() -> dict:
     assert results["error"]["conditions"]["Degraded"] == "True", results["error"]
     assert results["error"]["conditions"]["Available"] == "False", results["error"]
     assert results["error"]["conditions"]["Reconciling"] == "False", results["error"]
+
+    # Deleted: Available=False, Reconciling=False, Degraded=False, Deleted condition present
+    assert results["deleted"]["phase"] == "Deleted", results["deleted"]
+    assert results["deleted"]["conditions"]["Available"] == "False", results["deleted"]
+    assert results["deleted"]["conditions"]["Reconciling"] == "False", results["deleted"]
+    assert results["deleted"]["conditions"]["Degraded"] == "False", results["deleted"]
+    assert results["deleted"]["conditions"].get("Deleted") == "True", results["deleted"]
 
     return {
         "scenario": "cra-status-conditions",

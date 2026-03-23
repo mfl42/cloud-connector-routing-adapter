@@ -663,6 +663,71 @@ def scenario_commit_failure_rollback() -> dict:
     }
 
 
+def scenario_cluster_scoped_patch_url() -> dict:
+    """KubeStatusWriter._patch_plan omits /namespaces/ in the URL when cluster_scoped=True."""
+    scenario_dir = ARTIFACT_DIR / "cluster-scoped-patch-url"
+    reset_dir(scenario_dir)
+    state_file = scenario_dir / "state.json"
+
+    network_base, netplan_base = load_base_documents()
+    network = clone_network_config(
+        network_base, revision="chaos-cluster-url-1", generation=60, resource_version="1300"
+    )
+    netplan = clone_netplan_config(
+        netplan_base,
+        generation=60,
+        resource_version="1400",
+        nameservers=["9.9.9.9"],
+    )
+
+    state = ReconcileState()
+    reconcile_documents(
+        [network, netplan],
+        VyosTranslator(),
+        state,
+        str(state_file),
+        apply=False,
+    )
+    report = build_status_report(ReconcileState.load(state_file))
+
+    writer = KubeStatusWriter(
+        KubeConnection(server="https://fake-k8s.local", verify_tls=False),
+        timeout=3,
+        retry_attempts=2,
+        retry_backoff_seconds=0.01,
+    )
+
+    # namespace-scoped (default): URLs must include /namespaces/
+    ns_requests = FakeRequestsModule([FakePatchResponse(200)] * 4)
+    with patched_requests(ns_requests):
+        ns_result = writer.write_status(report, dry_run=False, cluster_scoped=False)
+
+    assert len(ns_result.patches) == 2, ns_result.to_dict()
+    for patch in ns_result.patches:
+        assert "/namespaces/" in patch.url, f"expected /namespaces/ in {patch.url}"
+        assert patch.cluster_scoped is False, patch.to_dict()
+
+    # cluster-scoped: URLs must NOT include /namespaces/
+    cluster_requests = FakeRequestsModule([FakePatchResponse(200)] * 4)
+    with patched_requests(cluster_requests):
+        cluster_result = writer.write_status(report, dry_run=False, cluster_scoped=True)
+
+    assert len(cluster_result.patches) == 2, cluster_result.to_dict()
+    for patch in cluster_result.patches:
+        assert "/namespaces/" not in patch.url, f"unexpected /namespaces/ in {patch.url}"
+        assert patch.cluster_scoped is True, patch.to_dict()
+        assert patch.url.endswith("/status"), patch.url
+
+    write_json(scenario_dir / "ns-patches.json", [p.to_dict() for p in ns_result.patches])
+    write_json(scenario_dir / "cluster-patches.json", [p.to_dict() for p in cluster_result.patches])
+
+    return {
+        "scenario": "cluster-scoped-patch-url",
+        "ns_scoped_url_sample": ns_result.patches[0].url,
+        "cluster_scoped_url_sample": cluster_result.patches[0].url,
+    }
+
+
 def scenario_cluster_scoped_status_wiring() -> dict:
     """cluster_scoped_status=True is forwarded to the status writer on every iteration."""
     scenario_dir = ARTIFACT_DIR / "cluster-scoped-status-wiring"
@@ -739,6 +804,7 @@ def main() -> int:
         scenario_watch_churn_and_prune(),
         scenario_k8s_patch_retry(),
         scenario_commit_failure_rollback(),
+        scenario_cluster_scoped_patch_url(),
         scenario_cluster_scoped_status_wiring(),
     ]
     summary = {
