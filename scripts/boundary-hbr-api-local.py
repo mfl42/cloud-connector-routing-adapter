@@ -154,9 +154,8 @@ def scenario_static_and_policy_boundaries() -> dict:
         "set policy route 'hbr-policy-edge' rule '10' protocol 'udp'" in result.commands
     ), result.commands
     assert not any("set table" in command and "hbr-policy-edge" in command for command in result.commands)
+    assert any("set policy route 'hbr-policy-edge' rule '10' set nexthop '192.0.2.9'" in command for command in result.commands), result.commands
     assert any("has no interface binding" in warning for warning in result.warnings), result.warnings
-    assert any("cannot resolve target table or target VRF" in warning for warning in result.warnings), result.warnings
-    assert any("carries next-hop 192.0.2.9" in warning for warning in result.warnings), result.warnings
     assert any("missing next-hop address" in warning for warning in result.warnings), result.warnings
     assert any("without a prefix" in warning for warning in result.warnings), result.warnings
 
