@@ -80,12 +80,20 @@ la delegue a un routeur externe — c'est ce que fait cet adaptateur.
 VyOS est un systeme d'exploitation reseau open source base sur Linux. Il
 fournit les fonctions d'un routeur professionnel :
 
-- **Routage** : BGP, OSPF, routes statiques, policy routing, VRF
+- **Routage** : BGP, OSPF, IS-IS, routes statiques, policy routing, VRF
 - **VXLAN/EVPN** : tunnels overlay L2, fabric EVPN avec route targets
-- **Firewall** : filtrage de paquets, zones, NAT
+- **Firewall stateful** : filtrage de paquets avec suivi de connexion
+  (nftables/conntrack), zones de securite, NAT source/destination
+- **IDS/IPS** : Suricata integre (`set service suricata`) pour la detection
+  et prevention d'intrusions avec inspection profonde des paquets
+- **Load-balancing** :
+  - reverse proxy L7 via HAProxy integre (terminaison SSL/TLS, backends
+    HTTP/HTTPS, health checks, algorithmes round-robin/leastconn)
+  - WAN load-balancing multi-lien avec health checks
 - **VPN** : IPsec, WireGuard, OpenVPN
 - **Interfaces** : Ethernet, bonding, bridge, VLAN (802.1Q), dummy, tunnel
 - **DNS/DHCP** : serveur et relais
+- **QoS** : traffic shaping, policing, queuing
 - **API HTTPS** : configuration programmatique via REST (`/configure`,
   `/configure-list`, `/retrieve`, `/show`)
 - **CLI** : commandes `set`, `delete`, `commit`, `show` dans un shell
