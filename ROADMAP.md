@@ -383,27 +383,28 @@ a new translation stage (route-map object registry + per-rule emit).
 
 ---
 
-### 5 — Cluster-scoped CRD watch (medium / medium priority)
+### ~~5 — Cluster-scoped CRD watch~~ ✓
 
-The controller defaults to namespace-scoped list/watch. Cluster-scoped CRD
-deployments require `--cluster-scoped` and are not covered by the local
-regression harness.
+The controller and status writer both support `--cluster-scoped-source` and
+`--cluster-scoped-status`. URL construction in `KubeDocumentClient._resource_url()`
+and `KubeStatusWriter._patch_plan()` omit the `/namespaces/{ns}` segment when
+the flag is set. The `cluster_scoped_status` parameter is forwarded end-to-end
+from `run_controller` to the status writer on every iteration.
 
 ---
 
-### 6 — Full CRA status contract (high / medium priority)
+### ~~6 — Full CRA status contract~~ ✓
 
-The adapter exports a local `AdapterStatusReport` and patches the Kubernetes
-`status` subresource with phase, revision, warnings, and conditions. The full
-CRA readiness, rollout, and reconciliation status fields expected by the HBR
-operator are not yet modelled.
+Three CRA-level readiness conditions are now emitted per document alongside the
+existing DesiredSeen / Applied / InSync conditions:
 
-Current fields emitted: `phase`, `observedRevision`, `warningCount`,
-`unsupportedCount`, `conditions` (DesiredSeen, Applied, InSync, HasWarnings,
-Deleted).
+- `Reconciling` — `True` when phase is `PendingApply` or `Drifted`
+- `Degraded` — `True` when phase is `Error` (carries the last error message)
+- `Available` — `True` when phase is `InSync`
 
-Missing: rollout readiness gates, per-interface readiness, CRA-level
-`reconciling`/`degraded`/`available` conditions.
+Per-interface readiness is deferred: it requires the adapter to correlate
+desired interface config with VyOS operational state, which has no stable
+upstream API yet.
 
 ---
 
