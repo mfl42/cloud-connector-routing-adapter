@@ -16,6 +16,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from hbr_vyos_adapter.k8s_documents import KubeDocumentClient
+from hbr_vyos_adapter.k8s_lease import KubeLeaseManager, LeaseState, NoopLeaseManager, _parse_lease
 from hbr_vyos_adapter.k8s_resources import CustomResourceSpec
 from hbr_vyos_adapter.k8s_status import KubeConnection
 from hbr_vyos_adapter.models import load_document
@@ -1129,6 +1130,70 @@ def scenario_bgp_route_map_compilation() -> dict:
     }
 
 
+def scenario_leader_election_boundaries() -> dict:
+    """Verify LeaseState expiry logic and _parse_lease parsing."""
+    scenario_dir = ARTIFACT_DIR / "leader-election-boundaries"
+    reset_dir(scenario_dir)
+    from datetime import UTC, datetime, timedelta
+
+    # NoopLeaseManager is always leader
+    noop = NoopLeaseManager()
+    assert noop.is_leader is True
+    assert noop.acquire() is True
+
+    # LeaseState: fresh lease is not expired
+    now = datetime.now(UTC).replace(microsecond=0)
+    fresh = LeaseState(holder="pod-1", renew_time=now, lease_duration_seconds=15)
+    assert fresh.expired is False
+
+    # LeaseState: old lease is expired
+    old = LeaseState(
+        holder="pod-1",
+        renew_time=now - timedelta(seconds=60),
+        lease_duration_seconds=15,
+    )
+    assert old.expired is True
+
+    # LeaseState: None renew_time is expired
+    empty = LeaseState(holder=None, renew_time=None)
+    assert empty.expired is True
+
+    # _parse_lease: round-trip from Kubernetes-style JSON
+    lease_json = {
+        "metadata": {"resourceVersion": "12345"},
+        "spec": {
+            "holderIdentity": "pod-42",
+            "leaseDurationSeconds": 30,
+            "renewTime": now.isoformat(),
+        },
+    }
+    parsed = _parse_lease(lease_json)
+    assert parsed.holder == "pod-42"
+    assert parsed.lease_duration_seconds == 30
+    assert parsed.resource_version == "12345"
+    assert parsed.renew_time is not None
+
+    # _parse_lease: missing fields
+    empty_parsed = _parse_lease({"metadata": {}, "spec": {}})
+    assert empty_parsed.holder is None
+    assert empty_parsed.expired is True
+
+    write_json(scenario_dir / "results.json", {
+        "noop_is_leader": noop.is_leader,
+        "fresh_expired": fresh.expired,
+        "old_expired": old.expired,
+        "parsed_holder": parsed.holder,
+    })
+
+    return {
+        "scenario": "leader-election-boundaries",
+        "noop_is_leader": noop.is_leader,
+        "fresh_expired": fresh.expired,
+        "old_expired": old.expired,
+        "parsed_holder": parsed.holder,
+    }
+
+
 def main() -> int:
     ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
     summaries = [
@@ -1145,6 +1210,7 @@ def main() -> int:
         scenario_cluster_scoped_url_routing(),
         scenario_cra_status_conditions(),
         scenario_bgp_route_map_compilation(),
+        scenario_leader_election_boundaries(),
     ]
     summary = {
         "scenarioCount": len(summaries),

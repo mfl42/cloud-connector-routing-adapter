@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import sys
+import threading
 import time
 from dataclasses import asdict
 from dataclasses import dataclass
@@ -10,6 +12,8 @@ from dataclasses import field
 
 from .k8s_documents import KubeDocumentClient
 from .k8s_documents import WatchEvent
+from .k8s_lease import LeaseManager
+from .k8s_lease import NoopLeaseManager
 from .k8s_status import KubeStatusWriter
 from .loader import load_documents
 from .models import NodeNetplanConfig
@@ -121,14 +125,30 @@ class FileDocumentSource(DocumentSource):
 
 @dataclass(slots=True)
 class KubernetesDocumentSource(DocumentSource):
+    """Kubernetes document source with background watch thread (informer pattern).
+
+    After ``initial_update()`` returns, a background thread continuously watches
+    for changes and pushes ``SourceUpdate`` objects to an internal queue.
+    ``wait_for_update()`` consumes from that queue, waking immediately when a
+    change arrives instead of blocking for the full timeout.
+
+    Falls back to the synchronous watch path when the background thread is not
+    running (e.g. after an error that kills the watcher).
+    """
+
     client: KubeDocumentClient
     namespace: str | None = None
     cluster_scoped: bool = False
     resource_kinds: list[str] | None = None
     name: str = "kubernetes"
+    resync_interval_seconds: float = 1800.0  # 30 minutes
     _resource_versions: dict[str, str] = field(default_factory=dict)
     _documents_by_key: dict[str, NodeNetworkConfig | NodeNetplanConfig] = field(default_factory=dict)
     _keys_by_kind: dict[str, set[str]] = field(default_factory=dict)
+    _event_queue: queue.Queue = field(default_factory=lambda: queue.Queue(maxsize=256))
+    _stop_event: threading.Event = field(default_factory=threading.Event)
+    _watch_thread: threading.Thread | None = None
+    _lock: threading.Lock = field(default_factory=threading.Lock)
 
     def initial_update(self) -> SourceUpdate:
         snapshot = self.client.list_documents(
@@ -139,6 +159,7 @@ class KubernetesDocumentSource(DocumentSource):
         self._resource_versions = snapshot.resource_versions
         self._documents_by_key = {_document_key(document): document for document in snapshot.documents}
         self._keys_by_kind = _build_kind_index(self._documents_by_key)
+        self._start_watch_thread()
         return SourceUpdate(
             documents=snapshot.documents,
             changed_keys=set(self._documents_by_key),
@@ -146,52 +167,148 @@ class KubernetesDocumentSource(DocumentSource):
         )
 
     def wait_for_update(self, timeout_seconds: float) -> SourceUpdate | None:
-        watch_result = self.client.watch_for_change(
-            self._resource_versions,
+        # Try to get from the event queue (non-blocking up to timeout)
+        try:
+            update = self._event_queue.get(timeout=timeout_seconds)
+            return update
+        except queue.Empty:
+            return None
+
+    def stop(self) -> None:
+        """Stop the background watch thread."""
+        self._stop_event.set()
+        if self._watch_thread and self._watch_thread.is_alive():
+            self._watch_thread.join(timeout=5.0)
+
+    def _start_watch_thread(self) -> None:
+        if self._watch_thread and self._watch_thread.is_alive():
+            return
+        self._stop_event.clear()
+        self._watch_thread = threading.Thread(
+            target=self._watch_loop,
+            daemon=True,
+            name="k8s-informer",
+        )
+        self._watch_thread.start()
+
+    def _watch_loop(self) -> None:
+        """Background watch loop — continuous list-then-watch with exponential backoff."""
+        backoff = 0.2
+        max_backoff = 30.0
+        last_resync = time.monotonic()
+
+        while not self._stop_event.is_set():
+            try:
+                # Periodic full resync
+                if time.monotonic() - last_resync >= self.resync_interval_seconds:
+                    self._full_resync()
+                    last_resync = time.monotonic()
+                    backoff = 0.2
+                    continue
+
+                with self._lock:
+                    resource_versions = dict(self._resource_versions)
+
+                watch_result = self.client.watch_for_change(
+                    resource_versions,
+                    namespace=self.namespace,
+                    cluster_scoped=self.cluster_scoped,
+                    resource_kinds=self.resource_kinds,
+                    timeout_seconds=min(30.0, self.resync_interval_seconds),
+                )
+
+                with self._lock:
+                    self._resource_versions = watch_result.resource_versions
+
+                if not watch_result.changed:
+                    backoff = 0.2
+                    continue
+
+                update = self._process_watch_result(watch_result)
+                if update:
+                    try:
+                        self._event_queue.put(update, timeout=5.0)
+                    except queue.Full:
+                        # Queue full — force a resync next cycle.
+                        last_resync = 0.0
+                backoff = 0.2
+
+            except Exception as exc:
+                if self._stop_event.is_set():
+                    break
+                print(f"k8s-informer: watch error: {exc}", file=sys.stderr)
+                self._stop_event.wait(backoff)
+                backoff = min(backoff * 2, max_backoff)
+
+    def _full_resync(self) -> None:
+        """Full relist — ensures eventual consistency."""
+        snapshot = self.client.list_documents(
             namespace=self.namespace,
             cluster_scoped=self.cluster_scoped,
             resource_kinds=self.resource_kinds,
-            timeout_seconds=timeout_seconds,
         )
-        self._resource_versions = watch_result.resource_versions
-        if not watch_result.changed:
-            return None
+        with self._lock:
+            old_keys = set(self._documents_by_key)
+            new_by_key = {_document_key(doc): doc for doc in snapshot.documents}
+            removed_keys = old_keys - set(new_by_key)
+            changed_keys: set[str] = set()
+            for key, doc in new_by_key.items():
+                if key not in self._documents_by_key or _raw_changed(self._documents_by_key[key].raw, doc.raw):
+                    changed_keys.add(key)
 
+            self._resource_versions = snapshot.resource_versions
+            self._documents_by_key = new_by_key
+            self._keys_by_kind = _build_kind_index(new_by_key)
+
+        if changed_keys or removed_keys:
+            update = SourceUpdate(
+                documents=[new_by_key[k] for k in changed_keys],
+                changed_keys=changed_keys,
+                removed_keys=removed_keys,
+                current_keys=set(new_by_key),
+            )
+            try:
+                self._event_queue.put(update, timeout=5.0)
+            except queue.Full:
+                pass
+
+    def _process_watch_result(self, watch_result) -> SourceUpdate | None:
         changed_keys: set[str] = set()
         removed_keys: set[str] = set()
         changed_documents: dict[str, NodeNetworkConfig | NodeNetplanConfig] = {}
 
-        if watch_result.relist_required:
-            kinds_to_refresh = {event.kind for event in watch_result.events if event.kind}
-            for kind in kinds_to_refresh:
-                refreshed = self.client.list_documents(
-                    namespace=self.namespace,
-                    cluster_scoped=self.cluster_scoped,
-                    resource_kinds=[kind],
-                )
-                self._resource_versions.update(refreshed.resource_versions)
-                refreshed_by_key = {
-                    _document_key(document): document for document in refreshed.documents
-                }
-                old_keys = set(self._keys_by_kind.get(kind, set()))
-                new_keys = set(refreshed_by_key)
-                removed_keys.update(old_keys - new_keys)
-                for key in old_keys - new_keys:
-                    self._documents_by_key.pop(key, None)
-                for key, document in refreshed_by_key.items():
-                    if key not in self._documents_by_key or self._documents_by_key[key].raw != document.raw:
-                        changed_keys.add(key)
-                        changed_documents[key] = document
-                    self._documents_by_key[key] = document
-                self._keys_by_kind[kind] = new_keys
-        else:
-            for event in watch_result.events:
-                self._apply_watch_event(
-                    event,
-                    changed_keys=changed_keys,
-                    removed_keys=removed_keys,
-                    changed_documents=changed_documents,
-                )
+        with self._lock:
+            if watch_result.relist_required:
+                kinds_to_refresh = {event.kind for event in watch_result.events if event.kind}
+                for kind in kinds_to_refresh:
+                    refreshed = self.client.list_documents(
+                        namespace=self.namespace,
+                        cluster_scoped=self.cluster_scoped,
+                        resource_kinds=[kind],
+                    )
+                    self._resource_versions.update(refreshed.resource_versions)
+                    refreshed_by_key = {
+                        _document_key(document): document for document in refreshed.documents
+                    }
+                    old_keys = set(self._keys_by_kind.get(kind, set()))
+                    new_keys = set(refreshed_by_key)
+                    removed_keys.update(old_keys - new_keys)
+                    for key in old_keys - new_keys:
+                        self._documents_by_key.pop(key, None)
+                    for key, document in refreshed_by_key.items():
+                        if key not in self._documents_by_key or self._documents_by_key[key].raw != document.raw:
+                            changed_keys.add(key)
+                            changed_documents[key] = document
+                        self._documents_by_key[key] = document
+                    self._keys_by_kind[kind] = new_keys
+            else:
+                for event in watch_result.events:
+                    self._apply_watch_event(
+                        event,
+                        changed_keys=changed_keys,
+                        removed_keys=removed_keys,
+                        changed_documents=changed_documents,
+                    )
 
         if not changed_keys and not removed_keys:
             return None
@@ -243,11 +360,15 @@ def run_controller(
     dry_run_status: bool = False,
     cluster_scoped_status: bool = False,
     deleted_retention_seconds: float = 300.0,
+    lease_manager: LeaseManager | None = None,
 ) -> ControllerRunResult:
     if apply and vyos_client is None:
         raise ValueError("apply=True requires a VyosApiClient")
     if write_status and status_writer is None:
         raise ValueError("write_status=True requires a KubeStatusWriter")
+
+    if lease_manager is None:
+        lease_manager = NoopLeaseManager()
 
     result = ControllerRunResult(once=once, interval_seconds=interval_seconds, source=source.name)
     translator = VyosTranslator()
@@ -256,6 +377,16 @@ def run_controller(
     while True:
         iteration += 1
         try:
+            # Leader election: acquire or renew lease before applying.
+            is_leader = lease_manager.acquire()
+            effective_apply = apply and is_leader
+            if apply and not is_leader:
+                print(
+                    f"controller iteration {iteration}: not leader "
+                    f"(held by {lease_manager.holder_identity}); skipping apply",
+                    file=sys.stderr,
+                )
+
             state = ReconcileState.load(state_file)
             removed_keys = set(pending_update.removed_keys)
             if pending_update.current_keys is not None:
@@ -266,7 +397,7 @@ def run_controller(
                 )
             deleted_keys = state.mark_deleted(removed_keys)
 
-            if deleted_keys and apply:
+            if deleted_keys and effective_apply:
                 try:
                     teardown_documents(
                         deleted_keys,
@@ -282,7 +413,7 @@ def run_controller(
                 translator,
                 state,
                 state_file,
-                apply=apply,
+                apply=effective_apply,
                 client=vyos_client,
                 status_file=status_file,
             )
