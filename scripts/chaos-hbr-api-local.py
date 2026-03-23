@@ -87,6 +87,7 @@ class ScriptedVyosClient:
     def __init__(self, outcomes: list[dict | Exception]) -> None:
         self._outcomes = list(outcomes)
         self.calls: list[list[str]] = []
+        self.discard_calls: int = 0
 
     def configure_commands(self, commands: list[str]) -> dict:
         self.calls.append(list(commands))
@@ -97,6 +98,10 @@ class ScriptedVyosClient:
         if isinstance(outcome, Exception):
             raise outcome
         return outcome
+
+    def discard_pending(self) -> dict:
+        self.discard_calls += 1
+        return {"success": True}
 
 
 class ScriptedStatusWriter:
@@ -592,6 +597,72 @@ def scenario_k8s_patch_retry() -> dict:
     }
 
 
+def scenario_commit_failure_rollback() -> dict:
+    """Apply fails (commit error) → discard_pending called → state not updated → next apply retries."""
+    scenario_dir = ARTIFACT_DIR / "commit-failure-rollback"
+    reset_dir(scenario_dir)
+    state_file  = scenario_dir / "state.json"
+    status_file = scenario_dir / "status.json"
+
+    network_base, netplan_base = load_base_documents()
+    network = clone_network_config(
+        network_base, revision="chaos-commit-fail-1", generation=20, resource_version="700"
+    )
+    netplan = clone_netplan_config(
+        netplan_base, generation=20, resource_version="800",
+        nameservers=["192.0.2.53"],
+    )
+
+    # First apply: VyOS returns success=False (commit error)
+    fail_client = ScriptedVyosClient([{"success": False, "error": "commit failed: configuration validation error"}])
+    fail_result = run_controller(
+        source=StaticSource([network, netplan]),
+        state_file=str(state_file),
+        status_file=str(status_file),
+        once=True,
+        apply=True,
+        vyos_client=fail_client,
+        write_status=True,
+        status_writer=ScriptedStatusWriter([]),
+    )
+    write_json(scenario_dir / "result-fail.json", fail_result.to_dict())
+
+    # discard_pending must have been called once
+    assert fail_client.discard_calls == 1, f"expected 1 discard call, got {fail_client.discard_calls}"
+
+    # State must not have advanced (applied_revision still absent / old)
+    saved_state = json.loads(state_file.read_text()) if state_file.exists() else {}
+    for doc_key, entry in saved_state.get("documents", {}).items():
+        assert entry.get("last_result") == "apply-failed", f"{doc_key}: expected apply-failed, got {entry.get('last_result')}"
+        assert entry.get("applied_revision") is None or entry.get("applied_revision") == "", (
+            f"{doc_key}: applied_revision must not advance on failure"
+        )
+
+    # Second apply: VyOS succeeds → state advances
+    ok_client = ScriptedVyosClient([{"success": True, "operations": [{"success": True}]}])
+    ok_result = run_controller(
+        source=StaticSource([network, netplan]),
+        state_file=str(state_file),
+        status_file=str(status_file),
+        once=True,
+        apply=True,
+        vyos_client=ok_client,
+        write_status=True,
+        status_writer=ScriptedStatusWriter([]),
+    )
+    write_json(scenario_dir / "result-ok.json", ok_result.to_dict())
+
+    assert ok_result.iterations[0].ok, ok_result.to_dict()
+    assert ok_client.discard_calls == 0, "no discard on success"
+
+    return {
+        "scenario": "commit-failure-rollback",
+        "discard_called_on_failure": fail_client.discard_calls,
+        "state_not_advanced_on_failure": True,
+        "second_apply_succeeded": ok_result.iterations[0].ok,
+    }
+
+
 def main() -> int:
     if len(sys.argv) > 1 and sys.argv[1] not in {"run"}:
         print("usage: chaos-hbr-api-local.py [run]", file=sys.stderr)
@@ -604,6 +675,7 @@ def main() -> int:
         scenario_status_writer_failure_recovery(),
         scenario_watch_churn_and_prune(),
         scenario_k8s_patch_retry(),
+        scenario_commit_failure_rollback(),
     ]
     summary = {
         "scenarioCount": len(summaries),

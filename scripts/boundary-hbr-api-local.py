@@ -16,7 +16,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from hbr_vyos_adapter.models import load_document
-from hbr_vyos_adapter.reconcile import reconcile_documents
+from hbr_vyos_adapter.reconcile import reconcile_documents, _BGP_NEIGHBOR_RE, _SCALAR_LEAF_RE
 from hbr_vyos_adapter.state import ReconcileState
 from hbr_vyos_adapter.translator import VyosTranslator
 
@@ -657,6 +657,185 @@ def scenario_desired_state_boundaries() -> dict:
     }
 
 
+def scenario_bgp_delete_regex_quotes() -> dict:
+    """BGP delete consolidation with VRF/neighbor names containing escaped quotes.
+
+    Verifies that _BGP_NEIGHBOR_RE and _SCALAR_LEAF_RE correctly match commands
+    where VRF or neighbor names contain an escaped single quote (\\').
+    """
+    scenario_dir = ARTIFACT_DIR / "bgp-delete-regex-quotes"
+    reset_dir(scenario_dir)
+
+    # Build the exact command strings that the translator would produce.
+    vrf_plain   = "vrf name 'tenant-a' protocols bgp"
+    vrf_quoted  = r"vrf name 'tenant\'s-edge' protocols bgp"
+    peer_plain  = "192.0.2.1"
+    peer_quoted = r"peer\'s-addr"
+
+    cmds_plain = [
+        f"set {vrf_plain} system-as '65001'",
+        f"set {vrf_plain} neighbor '{peer_plain}' remote-as '65002'",
+        f"set {vrf_plain} neighbor '{peer_plain}' address-family ipv4-unicast",
+        f"set {vrf_plain} neighbor '{peer_plain}' password 'secret'",
+    ]
+    cmds_quoted = [
+        f"set {vrf_quoted} system-as '65010'",
+        f"set {vrf_quoted} neighbor '{peer_quoted}' remote-as '65020'",
+        f"set {vrf_quoted} neighbor '{peer_quoted}' address-family ipv6-unicast",
+        f"set {vrf_quoted} neighbor '{peer_quoted}' timers keepalive '30'",
+        f"set {vrf_quoted} neighbor '{peer_quoted}' timers holdtime '90'",
+    ]
+
+    results = {}
+    for label, cmds in (("plain", cmds_plain), ("quoted", cmds_quoted)):
+        neighbor_matches = [bool(_BGP_NEIGHBOR_RE.match(c)) for c in cmds]
+        scalar_matches   = [bool(_SCALAR_LEAF_RE.match(c)) for c in cmds]
+        results[label] = {
+            "commands": cmds,
+            "neighbor_match": neighbor_matches,
+            "scalar_match": scalar_matches,
+        }
+
+    write_json(scenario_dir / "results.json", results)
+
+    # plain names — sanity check
+    assert results["plain"]["neighbor_match"] == [False, True, True, True], results["plain"]
+    assert results["plain"]["scalar_match"]   == [True,  True, False, True], results["plain"]
+
+    # quoted names — the actual bug fix
+    assert results["quoted"]["neighbor_match"] == [False, True, True, True, True], results["quoted"]
+    assert results["quoted"]["scalar_match"]   == [True,  True, False, True, True], results["quoted"]
+
+    return {
+        "scenario": "bgp-delete-regex-quotes",
+        "plainCmds": len(cmds_plain),
+        "quotedCmds": len(cmds_quoted),
+    }
+
+
+def scenario_large_topology() -> dict:
+    """10 VRFs × 10 BGP peers × 2 VLAN subinterfaces × 100 static routes per VRF.
+
+    Validates that the translator and reconcile layer handle a realistic
+    large-scale topology without crashes, command duplication, or digest
+    instability.
+    """
+    scenario_dir = ARTIFACT_DIR / "large-topology"
+    reset_dir(scenario_dir)
+    state_file  = scenario_dir / "state.json"
+    status_file = scenario_dir / "status.json"
+
+    N_VRFS      = 10
+    N_PEERS     = 10
+    N_VLANS     = 2
+    N_ROUTES    = 100
+
+    local_vrfs: dict = {}
+    for v in range(N_VRFS):
+        vrf_name = f"tenant-{v:02d}"
+        table    = 1000 + v
+
+        static_routes = []
+        for r in range(N_ROUTES):
+            prefix   = f"10.{v}.{r // 256}.{r % 256}/32"
+            next_hop = f"192.168.{v}.1"
+            static_routes.append({"prefix": prefix, "nextHop": {"address": next_hop}})
+
+        bgp_peers = []
+        for p in range(N_PEERS):
+            bgp_peers.append({
+                "address": f"172.16.{v}.{p + 1}",
+                "remoteASN": 65000 + v * 10 + p,
+                "addressFamilies": ["ipv4-unicast"],
+            })
+
+        interfaces = []
+        for vlan in range(N_VLANS):
+            interfaces.append(f"eth{v}.{100 + vlan}")
+
+        local_vrfs[vrf_name] = {
+            "table": table,
+            "interfaces": interfaces,
+            "staticRoutes": static_routes,
+            "bgpPeers": bgp_peers,
+            "localASN": 65000 + v,
+        }
+
+    document = load_document({
+        "apiVersion": "network.t-caas.telekom.com/v1alpha1",
+        "kind": "NodeNetworkConfig",
+        "metadata": {"name": "large-topology-node"},
+        "spec": {
+            "revision": "large-topo-r1",
+            "localVRFs": local_vrfs,
+        },
+    })
+
+    translator = VyosTranslator()
+    result = translator.translate(document)
+    write_json(scenario_dir / "translation.json", {
+        "commandCount": len(result.commands),
+        "warningCount": len(result.warnings),
+        "unsupportedCount": len(result.unsupported),
+        "commands": result.commands,
+    })
+
+    # No crashes, expected command volume:
+    # at minimum table + routes + remote-as + address-family per VRF
+    expected_min_commands = N_VRFS * (1 + N_ROUTES + N_PEERS + N_PEERS)
+    assert len(result.commands) >= expected_min_commands, (
+        f"expected >= {expected_min_commands} commands, got {len(result.commands)}"
+    )
+    # All 100 routes present for VRF 0
+    assert sum(1 for c in result.commands if "10.0." in c and "next-hop" in c) == N_ROUTES, (
+        "route count mismatch for tenant-00"
+    )
+
+    # No duplicate commands
+    assert len(result.commands) == len(set(result.commands)), "duplicate commands detected"
+
+    # Reconcile — first pass applies
+    client = GuardClient()
+    rec1 = reconcile_documents(
+        [document],
+        translator,
+        ReconcileState(),
+        str(state_file),
+        apply=True,
+        client=client,
+        status_file=str(status_file),
+    )
+    write_json(scenario_dir / "reconcile-1.json", rec1.to_dict())
+    assert rec1.apply_performed, "first reconcile should apply"
+    assert client.calls == 1, client.calls
+
+    # Reconcile — second pass is a noop (digest stable)
+    state2 = ReconcileState.load(str(state_file))
+    rec2 = reconcile_documents(
+        [document],
+        translator,
+        state2,
+        str(state_file),
+        apply=True,
+        client=client,
+        status_file=str(status_file),
+    )
+    write_json(scenario_dir / "reconcile-2.json", rec2.to_dict())
+    assert not rec2.apply_performed, "second reconcile should be a noop"
+    assert client.calls == 1, f"client called again on noop: {client.calls}"
+
+    return {
+        "scenario": "large-topology",
+        "vrfCount": N_VRFS,
+        "peersPerVrf": N_PEERS,
+        "vlansPerVrf": N_VLANS,
+        "routesPerVrf": N_ROUTES,
+        "totalCommands": len(result.commands),
+        "warnings": len(result.warnings),
+        "noop": not rec2.apply_performed,
+    }
+
+
 def main() -> int:
     ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
     summaries = [
@@ -668,6 +847,8 @@ def main() -> int:
         scenario_zero_command_reconcile_boundary(),
         scenario_malformed_structure_boundaries(),
         scenario_desired_state_boundaries(),
+        scenario_bgp_delete_regex_quotes(),
+        scenario_large_topology(),
     ]
     summary = {
         "scenarioCount": len(summaries),
