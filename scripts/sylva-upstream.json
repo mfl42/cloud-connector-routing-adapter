@@ -1,0 +1,11 @@
+{
+  "_comment": "Upstream source for Sylva/t-caas CRD drift detection. Edit to point at the real upstream.",
+  "gitlab_api": "https://gitlab.com/api/v4",
+  "project": "sylva-projects/sylva-core",
+  "branch": "main",
+  "crd_paths": [
+    "charts/network-operator/crds/nodenetworkconfig.yaml",
+    "charts/network-operator/crds/nodenetplanconfig.yaml"
+  ],
+  "local_crd_dir": "k8s/crds"
+}
