@@ -227,6 +227,34 @@ Tests deterministes de cas limites :
 - EVPN + VXLAN + layer2 + IRB (fabric VRF complet)
 - auto-decouverte API (variants, tolerance 404, URLs t-caas vs sylva.io)
 
+### Chaos (13 scenarios)
+
+Injection de fautes simulant des pannes reelles :
+- timeout VyOS puis recovery
+- echec status Kubernetes 409 puis convergence
+- churn de watch, suppression, prune des tombstones
+- retry HTTP patch Kubernetes (transport loss, 503)
+- echec commit VyOS puis rollback + retry
+- URL patch status en mode cluster-scoped
+- propagation du flag cluster_scoped_status
+- echec route-map apply puis retry
+- non-leader skip apply, leader apply
+- event queue informer (2 iterations, changement detecte)
+- exception pendant acquisition du lease
+- renouvellement lease multi-cycle (leader, leader, non-leader)
+- documents multi-API-group (sylva.io + t-caas dans un seul batch)
+
+### Fuzz (120 iterations, ~6300 commandes)
+
+Generation aleatoire de configurations incluant :
+- VRFs avec noms, tables, routes, peers BGP aleatoires
+- filtres BGP structures (prefix/community matchers, ge/le, modifications)
+- champs EVPN sur fabric VRFs (vni, route targets, export filters)
+- layer2s complets (vni, vlan, mtu, routeTarget, IRB)
+- policy routes avec protocoles mixtes
+- netplan avec interfaces, adresses, routes, DNS
+- verification : aucun crash, deuxieme passe = 0 commandes en attente
+
 ---
 
 ## Compatibilite API upstream
@@ -284,31 +312,3 @@ Limitations :
 4. **Packaging container + Helm** — image Docker et chart Helm pour deploiement
    Kubernetes (prerequis pour l'election de leader en production)
 5. **Metriques Prometheus** — compteurs de commandes, erreurs, latence reconcile
-
-### Chaos (13 scenarios)
-
-Injection de fautes simulant des pannes reelles :
-- timeout VyOS puis recovery
-- echec status Kubernetes 409 puis convergence
-- churn de watch, suppression, prune des tombstones
-- retry HTTP patch Kubernetes (transport loss, 503)
-- echec commit VyOS puis rollback + retry
-- URL patch status en mode cluster-scoped
-- propagation du flag cluster_scoped_status
-- echec route-map apply puis retry
-- non-leader skip apply, leader apply
-- event queue informer (2 iterations, changement detecte)
-- exception pendant acquisition du lease
-- renouvellement lease multi-cycle (leader, leader, non-leader)
-- documents multi-API-group (sylva.io + t-caas dans un seul batch)
-
-### Fuzz (120 iterations, ~6300 commandes)
-
-Generation aleatoire de configurations incluant :
-- VRFs avec noms, tables, routes, peers BGP aleatoires
-- filtres BGP structures (prefix/community matchers, ge/le, modifications)
-- champs EVPN sur fabric VRFs (vni, route targets, export filters)
-- layer2s complets (vni, vlan, mtu, routeTarget, IRB)
-- policy routes avec protocoles mixtes
-- netplan avec interfaces, adresses, routes, DNS
-- verification : aucun crash, deuxieme passe = 0 commandes en attente
