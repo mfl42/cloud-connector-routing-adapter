@@ -9,7 +9,7 @@ questions:
 - what failed during development and was corrected
 - what is still outside the current stability claim
 
-The current report reflects the branch state as of March 23, 2026 (main after PR #32 — test enrichment).
+The current report reflects the branch state as of March 23, 2026 (main after PR #34 — L2/VNI VXLAN + EVPN).
 
 ## Scope Of The Stability Claim
 
@@ -60,6 +60,28 @@ The live campaigns in this report were executed against:
 - management/control path: VyOS HTTPS API
 
 ## Executed Campaigns
+
+### 2026-03-23 — L2/VNI VXLAN + EVPN (item #9)
+
+Context:
+
+- ROADMAP item #9: Layer2 VXLAN domains, fabric VRF EVPN, IRB, VRF imports
+- Last planned ROADMAP item — all 9 items now complete
+- MAPPING.md updated with EVPN limitations and design decisions
+
+Branches tested: `feat/l2-vni-vxlan-evpn` → `dev` → `main` (PR #33, #34)
+
+Commands:
+
+```bash
+python3 scripts/boundary-hbr-api-local.py
+python3 scripts/chaos-hbr-api-local.py
+python3 scripts/fuzz-hbr-api-local.py --iterations 120
+```
+
+Results: boundary `16/16`, chaos `12/12`, fuzz `120/120` (6299 commands)
+
+---
 
 ### 2026-03-23 — main and dev sync validation
 
