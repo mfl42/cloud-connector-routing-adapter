@@ -1,0 +1,37 @@
+{
+  "apiVersion": "network.t-caas.telekom.com/v1alpha1",
+  "kind": "NodeNetplanConfig",
+  "metadata": {
+    "name": "vyos-lab-node-netplan"
+  },
+  "spec": {
+    "desiredState": {
+      "network": {
+        "version": 2,
+        "ethernets": {
+          "eth1": {
+            "addresses": [
+              "192.0.2.230/24"
+            ],
+            "routes": [
+              {
+                "to": "0.0.0.0/0",
+                "via": "192.0.2.1"
+              }
+            ],
+            "mtu": 1500
+          },
+          "eth2": {
+            "dhcp4": true
+          }
+        },
+        "nameservers": {
+          "addresses": [
+            "192.0.2.53",
+            "1.1.1.1"
+          ]
+        }
+      }
+    }
+  }
+}
