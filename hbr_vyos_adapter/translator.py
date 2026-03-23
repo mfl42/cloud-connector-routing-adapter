@@ -232,13 +232,6 @@ class VyosTranslator:
                 f"policy route {policy_name} has no interface binding; emit rules only"
             )
 
-        if policy_route.next_hop.address:
-            result.warnings.append(
-                f"policy route {policy_name} rule {rule_id_start} carries next-hop "
-                f"{policy_route.next_hop.address}; this scaffold maps policy rules to tables/VRFs, "
-                "not direct next-hop actions"
-            )
-
         # One VyOS rule per protocol (or one rule with no protocol filter).
         next_rule_id = rule_id_start
         for protocol in protocols_to_emit:
@@ -298,7 +291,22 @@ class VyosTranslator:
                 f"set {policy_root} '{policy_name}' rule '{rule_id}' destination port '{port_value}'"
             )
 
-        if policy_route.next_hop.vrf:
+        if policy_route.next_hop.address:
+            nexthop_family = _validated_ip_family(
+                policy_route.next_hop.address,
+                warnings=result.warnings,
+                context=f"policy route {policy_name} rule {rule_id} nexthop",
+            )
+            if nexthop_family is not None and nexthop_family != family:
+                result.warnings.append(
+                    f"policy route {policy_name} rule {rule_id} nexthop "
+                    f"{policy_route.next_hop.address} uses a different address family than the rule; skipping"
+                )
+            elif nexthop_family is not None:
+                result.commands.append(
+                    f"set {policy_root} '{policy_name}' rule '{rule_id}' set nexthop '{policy_route.next_hop.address}'"
+                )
+        elif policy_route.next_hop.vrf:
             result.commands.append(
                 f"set {policy_root} '{policy_name}' rule '{rule_id}' set vrf '{policy_route.next_hop.vrf}'"
             )
