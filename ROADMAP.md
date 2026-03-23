@@ -322,14 +322,13 @@ describes the current behaviour, and states what is missing.
 
 ### Translation gaps — NodeNetworkConfig
 
-#### Policy route: direct next-hop action not emitted
+#### ~~Policy route: direct next-hop action not emitted~~ ✓
 
-`policyRoute.nextHop.address` is parsed and surfaced as a warning but generates
-no VyOS command. The adapter currently maps policy rules only to a target VRF
-or routing table (`set vrf` / `set table`). A direct next-hop action
-(`set nexthop`) is not yet emitted.
-
-Current behaviour: `nextHop.address` present → warning, no command.
+`policyRoute.nextHop.address` is now emitted as
+`set policy route '<name>' rule '<id>' set nexthop '<address>'`.
+Address takes priority over `vrf` and `table` targets.
+Address-family mismatch between the rule and the nexthop produces a warning
+and skips the nexthop command.
 
 #### ~~Policy route: only the first protocol is used~~ ✓
 
@@ -356,12 +355,21 @@ accepted; address takes priority when both are present.
 `password` / `peerPassword` / `bgpPassword` are now parsed into `BgpPeer.password`
 and emitted as `set ... neighbor '<addr>' password '<value>'`.
 
-#### BGP: route-map and prefix-list not mapped
+#### BGP: route-map / import-export filter compilation not implemented
 
-Route policies (`routeMap`, `inboundRouteMap`, `outboundRouteMap`), prefix
-filters (`prefixList`, `distributionList`), and community attributes are not
-in the supported peer field set. They are surfaced as unsupported fields on
-the peer.
+The upstream CRD defines per-address-family `importFilter` and `exportFilter`
+objects (with `defaultAction`, `items`, prefix matchers, community modifiers).
+Simple string variants (`routeMap`, `prefixList`, `distributionList`) are also
+handled.
+
+Current behaviour: all filter/route-map field names are recognised (no longer
+surfaced as "unknown fields") and emitted as a dedicated unsupported marker:
+`has route-map/filter fields (...); route-map compilation not yet supported`.
+
+What is missing: compilation of filter specs into VyOS `set policy route-map`
+objects and binding them to the BGP neighbor per address-family. This requires
+a new translation stage (route-map object registry + per-rule emit) and is a
+planned but non-trivial addition.
 
 #### ~~BGP: timers not mapped~~ ✓
 

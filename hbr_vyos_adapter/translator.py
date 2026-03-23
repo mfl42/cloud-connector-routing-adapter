@@ -232,13 +232,6 @@ class VyosTranslator:
                 f"policy route {policy_name} has no interface binding; emit rules only"
             )
 
-        if policy_route.next_hop.address:
-            result.warnings.append(
-                f"policy route {policy_name} rule {rule_id_start} carries next-hop "
-                f"{policy_route.next_hop.address}; this scaffold maps policy rules to tables/VRFs, "
-                "not direct next-hop actions"
-            )
-
         # One VyOS rule per protocol (or one rule with no protocol filter).
         next_rule_id = rule_id_start
         for protocol in protocols_to_emit:
@@ -298,7 +291,22 @@ class VyosTranslator:
                 f"set {policy_root} '{policy_name}' rule '{rule_id}' destination port '{port_value}'"
             )
 
-        if policy_route.next_hop.vrf:
+        if policy_route.next_hop.address:
+            nexthop_family = _validated_ip_family(
+                policy_route.next_hop.address,
+                warnings=result.warnings,
+                context=f"policy route {policy_name} rule {rule_id} nexthop",
+            )
+            if nexthop_family is not None and nexthop_family != family:
+                result.warnings.append(
+                    f"policy route {policy_name} rule {rule_id} nexthop "
+                    f"{policy_route.next_hop.address} uses a different address family than the rule; skipping"
+                )
+            elif nexthop_family is not None:
+                result.commands.append(
+                    f"set {policy_root} '{policy_name}' rule '{rule_id}' set nexthop '{policy_route.next_hop.address}'"
+                )
+        elif policy_route.next_hop.vrf:
             result.commands.append(
                 f"set {policy_root} '{policy_name}' rule '{rule_id}' set vrf '{policy_route.next_hop.vrf}'"
             )
@@ -438,6 +446,24 @@ class VyosTranslator:
         for family in families:
             result.commands.append(f"{peer_root} address-family {family}")
 
+        # Route-map / prefix-list / filter fields — recognised but not yet compiled
+        # into VyOS route-map objects. Surfaced as a dedicated unsupported marker.
+        _FILTER_KEYS = {
+            "routeMap", "inboundRouteMap", "outboundRouteMap",
+            "route-map", "inbound-route-map", "outbound-route-map",
+            "prefixList", "inboundPrefixList", "outboundPrefixList",
+            "prefix-list", "inbound-prefix-list", "outbound-prefix-list",
+            "distributionList", "distribution-list",
+            "community", "communities", "communityList",
+            "importFilter", "exportFilter",
+        }
+        filter_keys_present = sorted(k for k in peer.raw if k in _FILTER_KEYS)
+        if filter_keys_present:
+            result.unsupported.append(
+                f"vrf {vrf_name} BGP peer {peer.address} has route-map/filter fields "
+                f"({', '.join(filter_keys_present)}); route-map compilation not yet supported"
+            )
+
         unsupported_keys = sorted(
             key
             for key in peer.raw
@@ -478,7 +504,7 @@ class VyosTranslator:
                 "address_families",
                 "families",
                 "afiSafis",
-            }
+            } | _FILTER_KEYS
         )
         if unsupported_keys:
             result.unsupported.append(
