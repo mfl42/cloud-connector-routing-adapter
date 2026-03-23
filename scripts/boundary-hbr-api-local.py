@@ -995,6 +995,140 @@ def scenario_cra_status_conditions() -> dict:
     }
 
 
+def scenario_bgp_route_map_compilation() -> dict:
+    """BGP importFilter / exportFilter → VyOS route-map + prefix-list + community-list."""
+    scenario_dir = ARTIFACT_DIR / "bgp-route-map-compilation"
+    reset_dir(scenario_dir)
+
+    document = load_document({
+        "apiVersion": "network.t-caas.telekom.com/v1alpha1",
+        "kind": "NodeNetworkConfig",
+        "metadata": {"name": "bgp-filter-node"},
+        "spec": {
+            "revision": "filters-v1",
+            "localVRFs": {
+                "filter-vrf": {
+                    "table": 200,
+                    "localASN": 65000,
+                    "bgpPeers": [
+                        {
+                            "address": "192.0.2.1",
+                            "remoteASN": 65010,
+                            "addressFamilies": ["ipv4-unicast"],
+                            "ipv4": {
+                                "importFilter": {
+                                    "defaultAction": {"type": "reject"},
+                                    "items": [
+                                        {
+                                            "action": {
+                                                "type": "accept",
+                                                "modifyRoute": {
+                                                    "addCommunities": ["65000:100"],
+                                                    "additiveCommunities": True,
+                                                },
+                                            },
+                                            "matcher": {
+                                                "prefix": {"prefix": "10.0.0.0/8", "ge": 16, "le": 24},
+                                            },
+                                        },
+                                        {
+                                            "action": {"type": "accept"},
+                                            "matcher": {
+                                                "bgpCommunity": {"community": "65010:200", "exactMatch": True},
+                                            },
+                                        },
+                                    ],
+                                },
+                                "exportFilter": {
+                                    "defaultAction": {"type": "accept"},
+                                },
+                            },
+                        },
+                        {
+                            "address": "2001:db8::1",
+                            "remoteASN": 65020,
+                            "addressFamilies": ["ipv6-unicast"],
+                            "ipv6": {
+                                "importFilter": {
+                                    "defaultAction": {"type": "accept"},
+                                    "items": [
+                                        {
+                                            "action": {
+                                                "type": "reject",
+                                                "modifyRoute": {"removeAllCommunities": True},
+                                            },
+                                            "matcher": {
+                                                "prefix": {"prefix": "2001:db8:dead::/48"},
+                                            },
+                                        },
+                                    ],
+                                },
+                            },
+                        },
+                        {
+                            "address": "192.0.2.99",
+                            "remoteASN": 65099,
+                            "addressFamilies": ["ipv4-unicast"],
+                        },
+                    ],
+                }
+            },
+        },
+    })
+
+    result = VyosTranslator().translate(document)
+    write_json(scenario_dir / "translation.json", {
+        "commands": result.commands,
+        "warnings": result.warnings,
+        "unsupported": result.unsupported,
+    })
+
+    # --- IPv4 import filter assertions ---
+    import_map = "hbr-filter-vrf-192.0.2.1-ipv4-import"
+    assert any(f"route-map '{import_map}' rule '10' action 'permit'" in c for c in result.commands), result.commands
+    assert any(f"prefix-list '{import_map}-r10' rule '10' prefix '10.0.0.0/8'" in c for c in result.commands)
+    assert any(f"prefix-list '{import_map}-r10' rule '10' ge '16'" in c for c in result.commands)
+    assert any(f"prefix-list '{import_map}-r10' rule '10' le '24'" in c for c in result.commands)
+    assert any(f"match ip address prefix-list '{import_map}-r10'" in c for c in result.commands)
+    assert any("set community '65000:100'" in c for c in result.commands)
+    assert any("set community additive" in c for c in result.commands)
+    # Community matcher with exact-match
+    assert any(f"community-list '{import_map}-cl-r20'" in c and "regex '65010:200'" in c for c in result.commands)
+    assert any("exact-match" in c for c in result.commands)
+    # Default action = deny
+    assert any(f"route-map '{import_map}' rule '65535' action 'deny'" in c for c in result.commands)
+    # Binding
+    assert any(f"route-map import '{import_map}'" in c for c in result.commands)
+
+    # --- IPv4 export filter assertions ---
+    export_map = "hbr-filter-vrf-192.0.2.1-ipv4-export"
+    assert any(f"route-map '{export_map}' rule '65535' action 'permit'" in c for c in result.commands)
+    assert any(f"route-map export '{export_map}'" in c for c in result.commands)
+
+    # --- IPv6 import filter assertions ---
+    ipv6_map = "hbr-filter-vrf-2001-db8--1-ipv6-import"
+    assert any(f"route-map '{ipv6_map}' rule '10' action 'deny'" in c for c in result.commands)
+    assert any("prefix-list6" in c and "2001:db8:dead::/48" in c for c in result.commands)
+    assert any("match ipv6 address prefix-list6" in c for c in result.commands)
+    assert any("set community 'none'" in c for c in result.commands)
+    assert any(f"route-map import '{ipv6_map}'" in c for c in result.commands)
+
+    # --- Peer without filters should NOT generate route-map ---
+    assert not any("192.0.2.99" in c and "route-map" in c for c in result.commands)
+
+    # No filter unsupported markers for importFilter/exportFilter
+    assert not any("route-map compilation not yet supported" in u for u in result.unsupported), result.unsupported
+
+    return {
+        "scenario": "bgp-route-map-compilation",
+        "commandCount": len(result.commands),
+        "warningCount": len(result.warnings),
+        "unsupportedCount": len(result.unsupported),
+        "ipv4ImportMapName": import_map,
+        "ipv6ImportMapName": ipv6_map,
+    }
+
+
 def main() -> int:
     ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
     summaries = [
@@ -1010,6 +1144,7 @@ def main() -> int:
         scenario_large_topology(),
         scenario_cluster_scoped_url_routing(),
         scenario_cra_status_conditions(),
+        scenario_bgp_route_map_compilation(),
     ]
     summary = {
         "scenarioCount": len(summaries),
