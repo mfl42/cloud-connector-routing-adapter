@@ -15,9 +15,13 @@ import sys
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from hbr_vyos_adapter.k8s_documents import KubeDocumentClient
+from hbr_vyos_adapter.k8s_resources import CustomResourceSpec
+from hbr_vyos_adapter.k8s_status import KubeConnection
 from hbr_vyos_adapter.models import load_document
 from hbr_vyos_adapter.reconcile import reconcile_documents, _BGP_NEIGHBOR_RE, _SCALAR_LEAF_RE
-from hbr_vyos_adapter.state import ReconcileState
+from hbr_vyos_adapter.state import DocumentState, ReconcileState
+from hbr_vyos_adapter.status import build_status_report
 from hbr_vyos_adapter.translator import VyosTranslator
 
 
@@ -836,6 +840,145 @@ def scenario_large_topology() -> dict:
     }
 
 
+def scenario_cluster_scoped_url_routing() -> dict:
+    """Verify that _resource_url() produces correct paths for namespace-scoped and cluster-scoped modes."""
+    scenario_dir = ARTIFACT_DIR / "cluster-scoped-url-routing"
+    reset_dir(scenario_dir)
+
+    conn = KubeConnection(server="https://k8s.test:6443", verify_tls=False)
+    client = KubeDocumentClient(connection=conn)
+    resource = CustomResourceSpec(
+        api_version="network.t-caas.telekom.com/v1alpha1",
+        kind="NodeNetworkConfig",
+        plural="nodenetworkconfigs",
+    )
+
+    # Namespace-scoped: URL must contain /namespaces/<ns>/
+    url_ns = client._resource_url(resource, namespace="default", cluster_scoped=False)
+    assert "/namespaces/default/" in url_ns, url_ns
+    assert url_ns.endswith("/nodenetworkconfigs"), url_ns
+
+    # Cluster-scoped: URL must NOT contain /namespaces/
+    url_cluster = client._resource_url(resource, namespace="default", cluster_scoped=True)
+    assert "/namespaces/" not in url_cluster, url_cluster
+    assert url_cluster.endswith("/nodenetworkconfigs"), url_cluster
+
+    # namespace=None with cluster_scoped=False behaves like cluster-scoped
+    url_none_ns = client._resource_url(resource, namespace=None, cluster_scoped=False)
+    assert "/namespaces/" not in url_none_ns, url_none_ns
+
+    # Non-default namespace is preserved in namespace-scoped mode
+    url_other_ns = client._resource_url(resource, namespace="tenant-a", cluster_scoped=False)
+    assert "/namespaces/tenant-a/" in url_other_ns, url_other_ns
+
+    # Both modes share the same base API group path
+    assert "network.t-caas.telekom.com" in url_ns
+    assert "network.t-caas.telekom.com" in url_cluster
+
+    write_json(scenario_dir / "results.json", {
+        "url_namespace_scoped": url_ns,
+        "url_cluster_scoped": url_cluster,
+        "url_namespace_none": url_none_ns,
+        "url_other_namespace": url_other_ns,
+    })
+
+    return {
+        "scenario": "cluster-scoped-url-routing",
+        "url_namespace_scoped": url_ns,
+        "url_cluster_scoped": url_cluster,
+    }
+
+
+def scenario_cra_status_conditions() -> dict:
+    """Verify Reconciling / Degraded / Available conditions for all phase states."""
+    scenario_dir = ARTIFACT_DIR / "cra-status-conditions"
+    reset_dir(scenario_dir)
+
+    now = "2026-03-23T00:00:00+00:00"
+
+    def make_state(**kwargs) -> ReconcileState:
+        s = ReconcileState()
+        s.documents["test/doc"] = DocumentState(
+            key="test/doc",
+            api_version="network.t-caas.telekom.com/v1alpha1",
+            kind="NodeNetworkConfig",
+            name="doc",
+            namespace="default",
+            last_seen_at=now,
+            **kwargs,
+        )
+        return s
+
+    # InSync: desired == applied
+    state_in_sync = make_state(
+        desired_revision="r1", desired_digest="d1",
+        applied_revision="r1", applied_digest="d1",
+        last_result="applied",
+    )
+    # PendingApply: desired set, applied absent
+    state_pending = make_state(
+        desired_revision="r2", desired_digest="d2",
+        applied_revision=None, applied_digest=None,
+        last_result="pending-apply",
+    )
+    # Drifted: desired != applied (both set)
+    state_drifted = make_state(
+        desired_revision="r3", desired_digest="d3",
+        applied_revision="r2", applied_digest="d2",
+        last_result="pending-apply",
+    )
+    # Error: last_error set
+    state_error = make_state(
+        desired_revision="r4", desired_digest="d4",
+        applied_revision=None, applied_digest=None,
+        last_result="apply-failed",
+        last_error="commit failed",
+    )
+
+    results = {}
+    for label, state in (
+        ("in_sync", state_in_sync),
+        ("pending", state_pending),
+        ("drifted", state_drifted),
+        ("error", state_error),
+    ):
+        report = build_status_report(state, now=now)
+        doc = report.documents[0]
+        condition_map = {c.type: c.status for c in doc.conditions}
+        results[label] = {"phase": doc.phase, "conditions": condition_map}
+
+    write_json(scenario_dir / "results.json", results)
+
+    # InSync: Available=True, Reconciling=False, Degraded=False
+    assert results["in_sync"]["phase"] == "InSync", results["in_sync"]
+    assert results["in_sync"]["conditions"]["Available"] == "True", results["in_sync"]
+    assert results["in_sync"]["conditions"]["Reconciling"] == "False", results["in_sync"]
+    assert results["in_sync"]["conditions"]["Degraded"] == "False", results["in_sync"]
+
+    # PendingApply: Available=False, Reconciling=True, Degraded=False
+    assert results["pending"]["phase"] == "PendingApply", results["pending"]
+    assert results["pending"]["conditions"]["Available"] == "False", results["pending"]
+    assert results["pending"]["conditions"]["Reconciling"] == "True", results["pending"]
+    assert results["pending"]["conditions"]["Degraded"] == "False", results["pending"]
+
+    # Drifted: Available=False, Reconciling=True, Degraded=False
+    assert results["drifted"]["phase"] == "Drifted", results["drifted"]
+    assert results["drifted"]["conditions"]["Reconciling"] == "True", results["drifted"]
+    assert results["drifted"]["conditions"]["Available"] == "False", results["drifted"]
+
+    # Error: Available=False, Reconciling=False, Degraded=True
+    assert results["error"]["phase"] == "Error", results["error"]
+    assert results["error"]["conditions"]["Degraded"] == "True", results["error"]
+    assert results["error"]["conditions"]["Available"] == "False", results["error"]
+    assert results["error"]["conditions"]["Reconciling"] == "False", results["error"]
+
+    return {
+        "scenario": "cra-status-conditions",
+        "phases_tested": list(results.keys()),
+        "condition_types": list(results["in_sync"]["conditions"].keys()),
+    }
+
+
 def main() -> int:
     ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
     summaries = [
@@ -849,6 +992,8 @@ def main() -> int:
         scenario_desired_state_boundaries(),
         scenario_bgp_delete_regex_quotes(),
         scenario_large_topology(),
+        scenario_cluster_scoped_url_routing(),
+        scenario_cra_status_conditions(),
     ]
     summary = {
         "scenarioCount": len(summaries),

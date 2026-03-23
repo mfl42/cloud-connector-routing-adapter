@@ -663,6 +663,69 @@ def scenario_commit_failure_rollback() -> dict:
     }
 
 
+def scenario_cluster_scoped_status_wiring() -> dict:
+    """cluster_scoped_status=True is forwarded to the status writer on every iteration."""
+    scenario_dir = ARTIFACT_DIR / "cluster-scoped-status-wiring"
+    reset_dir(scenario_dir)
+    state_file = scenario_dir / "state.json"
+    status_file = scenario_dir / "status.json"
+
+    network_base, netplan_base = load_base_documents()
+    network = clone_network_config(
+        network_base, revision="chaos-cluster-scoped-1", generation=50, resource_version="1100"
+    )
+    netplan = clone_netplan_config(
+        netplan_base,
+        generation=50,
+        resource_version="1200",
+        nameservers=["192.0.2.53"],
+    )
+
+    client = ScriptedVyosClient([{"success": True, "operations": [{"success": True}]}])
+    status_writer = ScriptedStatusWriter([])
+
+    result = run_controller(
+        source=StaticSource([network, netplan]),
+        state_file=str(state_file),
+        status_file=str(status_file),
+        once=True,
+        apply=True,
+        vyos_client=client,
+        write_status=True,
+        status_writer=status_writer,
+        cluster_scoped_status=True,
+    )
+    write_json(scenario_dir / "result.json", result.to_dict())
+
+    assert result.iterations[0].ok, result.to_dict()
+    assert len(status_writer.calls) == 1, f"expected 1 status write call, got {status_writer.calls}"
+    assert status_writer.calls[0]["cluster_scoped"] is True, (
+        f"expected cluster_scoped=True, got {status_writer.calls[0]}"
+    )
+
+    # Second run (noop) must also forward the flag
+    noop_writer = ScriptedStatusWriter([])
+    run_controller(
+        source=StaticSource([network, netplan]),
+        state_file=str(state_file),
+        status_file=str(status_file),
+        once=True,
+        apply=True,
+        vyos_client=ScriptedVyosClient([]),
+        write_status=True,
+        status_writer=noop_writer,
+        cluster_scoped_status=True,
+    )
+    assert len(noop_writer.calls) == 1, noop_writer.calls
+    assert noop_writer.calls[0]["cluster_scoped"] is True, noop_writer.calls[0]
+
+    return {
+        "scenario": "cluster-scoped-status-wiring",
+        "cluster_scoped_forwarded": status_writer.calls[0]["cluster_scoped"],
+        "noop_cluster_scoped_forwarded": noop_writer.calls[0]["cluster_scoped"],
+    }
+
+
 def main() -> int:
     if len(sys.argv) > 1 and sys.argv[1] not in {"run"}:
         print("usage: chaos-hbr-api-local.py [run]", file=sys.stderr)
@@ -676,6 +739,7 @@ def main() -> int:
         scenario_watch_churn_and_prune(),
         scenario_k8s_patch_retry(),
         scenario_commit_failure_rollback(),
+        scenario_cluster_scoped_status_wiring(),
     ]
     summary = {
         "scenarioCount": len(summaries),
