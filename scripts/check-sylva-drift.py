@@ -181,29 +181,48 @@ def main() -> int:
         # Not a hard failure; upstream might have restructured
         return 0
 
-    local_crds = sorted(local_crd_dir.glob("*.yaml"))
-    local_crds = [yaml.safe_load(p.read_text()) for p in local_crds if p.exists()]
+    local_crds_raw = sorted(local_crd_dir.glob("*.yaml"))
+    local_crds = [yaml.safe_load(p.read_text()) for p in local_crds_raw if p.exists()]
     local_crds = [c for c in local_crds if c]
+
+    supported_kinds = set(cfg.get("supported_kinds", []))
+    known_unsupported = set(cfg.get("known_unsupported_kinds", []))
+
     local_by_kind = {extract_crd_summary(c)["kind"]: extract_crd_summary(c) for c in local_crds}
     upstream_by_kind = {extract_crd_summary(c)["kind"]: extract_crd_summary(c) for c in upstream_crds}
 
-    report: dict = {"upstream_kinds": [], "local_kinds": [], "diffs": [], "drift": False}
-    report["upstream_kinds"] = sorted(upstream_by_kind.keys())
-    report["local_kinds"] = sorted(local_by_kind.keys())
+    report: dict = {
+        "upstream_kinds": sorted(upstream_by_kind.keys()),
+        "local_kinds": sorted(local_by_kind.keys()),
+        "supported_kinds": sorted(supported_kinds),
+        "known_unsupported_kinds": sorted(known_unsupported),
+        "diffs": [],
+        "new_unsupported_kinds": [],
+        "drift": False,
+    }
 
-    # New kinds in upstream that we don't support yet
-    for kind in set(upstream_by_kind) - set(local_by_kind):
-        report["diffs"].append({"kind": kind, "changes": ["new kind in upstream (not yet supported)"]})
+    # Truly new kinds — not in local CRDs and not in known_unsupported list
+    for kind in set(upstream_by_kind) - set(local_by_kind) - known_unsupported:
+        report["new_unsupported_kinds"].append(kind)
+        report["diffs"].append({
+            "kind": kind,
+            "changes": ["NEW kind in upstream — add to known_unsupported_kinds or implement translator coverage"],
+        })
         report["drift"] = True
 
-    # Field-level drift for shared kinds
+    # Field-level drift for kinds we track locally (supported kinds)
     for kind in set(upstream_by_kind) & set(local_by_kind):
         diff = diff_summaries(local_by_kind[kind], upstream_by_kind[kind])
         if diff["changes"]:
             report["diffs"].append(diff)
             report["drift"] = True
 
+    # Informational: known-unsupported kinds still present in upstream
+    report["known_unsupported_present"] = sorted(known_unsupported & set(upstream_by_kind))
+
     # Print summary
+    if report["known_unsupported_present"]:
+        print(f"Known unsupported (tracked, not fatal): {', '.join(report['known_unsupported_present'])}")
     if report["drift"]:
         print(f"DRIFT DETECTED — {len(report['diffs'])} kind(s) changed:")
         for item in report["diffs"]:
@@ -211,7 +230,7 @@ def main() -> int:
             for change in item["changes"]:
                 print(f"    - {change}")
     else:
-        print("No drift detected — adapter is in sync with upstream Sylva.")
+        print("No drift — adapter is in sync with upstream Sylva Cloud Connector.")
 
     if args.output:
         Path(args.output).write_text(json.dumps(report, indent=2) + "\n")

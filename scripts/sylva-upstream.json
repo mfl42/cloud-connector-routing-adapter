@@ -1,11 +1,38 @@
 {
-  "_comment": "Upstream source for Sylva/t-caas CRD drift detection. Edit to point at the real upstream.",
+  "_comment": "Upstream: Sylva Cloud Connector (ex-HBR WG07) — gitlab.com/sylva-projects/sylva-elements/network-connector",
   "gitlab_api": "https://gitlab.com/api/v4",
-  "project": "sylva-projects/sylva-core",
+  "project": "sylva-projects/sylva-elements/network-connector",
   "branch": "main",
   "crd_paths": [
-    "charts/network-operator/crds/nodenetworkconfig.yaml",
-    "charts/network-operator/crds/nodenetplanconfig.yaml"
+    "config/crd/bases/network.t-caas.telekom.com_nodenetworkconfigs.yaml",
+    "config/crd/bases/network.t-caas.telekom.com_nodenetplanconfigs.yaml",
+    "config/crd/bases/network.t-caas.telekom.com_bgppeerings.yaml",
+    "config/crd/bases/network.t-caas.telekom.com_layer2networkconfigurations.yaml",
+    "config/crd/bases/network.t-caas.telekom.com_networkconfigrevisions.yaml",
+    "config/crd/bases/network.t-caas.telekom.com_vrfrouteconfigurations.yaml"
   ],
-  "local_crd_dir": "k8s/crds"
+  "api_type_paths": [
+    "api/v1alpha1/nodenetworkconfig_types.go",
+    "api/v1alpha1/nodenetplanconfig_types.go",
+    "api/v1alpha1/bgppeering_types.go",
+    "api/v1alpha1/layer2networkconfiguration_types.go",
+    "api/v1alpha1/vrfrouteconfiguration_types.go",
+    "api/v1alpha1/networkconfigrevision_types.go"
+  ],
+  "local_crd_dir": "k8s/crds",
+  "supported_kinds": [
+    "NodeNetworkConfig",
+    "NodeNetplanConfig"
+  ],
+  "known_unsupported_kinds": [
+    "BGPPeering",
+    "Layer2NetworkConfiguration",
+    "NetworkConfigRevision",
+    "VrfRouteConfiguration",
+    "VRFRouteConfiguration"
+  ],
+  "watch_notes": [
+    "NodeNetplanConfig.spec.desiredState (netplan.State) — upstream migrating from explicit fields to netplan native format",
+    "network-connector merge into sylva-core in progress — API group may change from network.t-caas.telekom.com"
+  ]
 }
