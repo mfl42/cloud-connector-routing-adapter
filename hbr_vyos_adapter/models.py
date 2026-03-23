@@ -372,19 +372,11 @@ class NodeNetplanConfig:
     def from_dict(cls, data: dict[str, Any]) -> "NodeNetplanConfig":
         data = _mapping_or_raise(data, "NodeNetplanConfig")
         spec = _mapping_or_raise(data.get("spec"), "NodeNetplanConfig.spec", allow_none=True)
-        interfaces: dict[str, InterfaceConfig] = {}
-        for section in ("interfaces", "ethernets"):
-            for name, value in _mapping_or_raise(
-                spec.get(section), f"NodeNetplanConfig.spec.{section}", allow_none=True
-            ).items():
-                if isinstance(value, dict):
-                    interfaces[name] = InterfaceConfig.from_dict(name, value)
 
-        nameservers = _string_list(
-            spec.get("nameservers")
-            or spec.get("nameServers")
-            or (spec.get("dns") or {}).get("addresses")
-        )
+        if "desiredState" in spec:
+            interfaces, nameservers = _parse_netplan_state(spec["desiredState"])
+        else:
+            interfaces, nameservers = _parse_netplan_legacy(spec)
 
         return cls(
             api_version=data.get("apiVersion", ""),
@@ -394,6 +386,84 @@ class NodeNetplanConfig:
             nameservers=nameservers,
             raw=data,
         )
+
+
+# ---------------------------------------------------------------------------
+# NodeNetplanConfig spec parsers
+# ---------------------------------------------------------------------------
+
+# All interface-type sections recognised in a netplan network document.
+_NETPLAN_IFACE_SECTIONS = (
+    "ethernets",
+    "bonds",
+    "bridges",
+    "vlans",
+    "dummies",
+    "tunnels",
+    "wifis",
+    "modems",
+    "wlan",
+)
+
+
+def _parse_netplan_state(
+    desired_state: Any,
+) -> tuple[dict[str, "InterfaceConfig"], list[str]]:
+    """Parse a ``spec.desiredState`` netplan.State object.
+
+    Accepts both the wrapped form (``{network: {...}}``) and the unwrapped
+    form (``{ethernets: {...}, ...}``), matching the two shapes seen in the
+    upstream Sylva migration.
+
+    Returns ``(interfaces, nameservers)``.
+    """
+    if not isinstance(desired_state, dict):
+        return {}, []
+
+    # Unwrap ``network:`` key when present.
+    network = desired_state.get("network", desired_state)
+    if not isinstance(network, dict):
+        return {}, []
+
+    interfaces: dict[str, InterfaceConfig] = {}
+    for section in _NETPLAN_IFACE_SECTIONS:
+        section_data = network.get(section)
+        if not isinstance(section_data, dict):
+            continue
+        for name, value in section_data.items():
+            if isinstance(value, dict):
+                interfaces[name] = InterfaceConfig.from_dict(name, value)
+
+    # Global nameservers: ``network.nameservers.addresses`` or plain list.
+    ns_block = network.get("nameservers")
+    if isinstance(ns_block, dict):
+        nameservers = _string_list(ns_block.get("addresses"))
+    elif isinstance(ns_block, list):
+        nameservers = _string_list(ns_block)
+    else:
+        nameservers = []
+
+    return interfaces, nameservers
+
+
+def _parse_netplan_legacy(
+    spec: dict[str, Any],
+) -> tuple[dict[str, "InterfaceConfig"], list[str]]:
+    """Parse the legacy ``spec.interfaces`` / ``spec.ethernets`` format."""
+    interfaces: dict[str, InterfaceConfig] = {}
+    for section in ("interfaces", "ethernets"):
+        for name, value in _mapping_or_raise(
+            spec.get(section), f"NodeNetplanConfig.spec.{section}", allow_none=True
+        ).items():
+            if isinstance(value, dict):
+                interfaces[name] = InterfaceConfig.from_dict(name, value)
+
+    nameservers = _string_list(
+        spec.get("nameservers")
+        or spec.get("nameServers")
+        or (spec.get("dns") or {}).get("addresses")
+    )
+    return interfaces, nameservers
 
 
 class ModelRegistry:
