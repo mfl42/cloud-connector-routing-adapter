@@ -300,8 +300,10 @@ def _desired_revision(
     return f"digest-{_commands_digest(commands)[:12]}"
 
 
+_Q = r"'(?:[^'\\]|\\.)*'"  # single-quoted VyOS token, allowing escaped quotes
+
 _BGP_NEIGHBOR_RE = re.compile(
-    r"^set (vrf name '[^']+' protocols bgp neighbor '[^']+')(?:\s|$)"
+    r"^set (vrf name " + _Q + r" protocols bgp neighbor " + _Q + r")(?:\s|$)"
 )
 
 
@@ -337,16 +339,16 @@ def _compute_diff_deletes(removed_cmds: set[str], new_cmds: set[str]) -> list[st
 # command — specifying the value in a VyOS delete path is not valid for these.
 _SCALAR_LEAF_RE = re.compile(
     r"^set ("
-    r"vrf name '[^']+' table"
-    r"|vrf name '[^']+' protocols bgp system-as"
-    r"|vrf name '[^']+' protocols bgp parameters router-id"
-    r"|vrf name '[^']+' protocols bgp neighbor '[^']+' remote-as"
-    r"|vrf name '[^']+' protocols bgp neighbor '[^']+' update-source"
-    r"|vrf name '[^']+' protocols bgp neighbor '[^']+' ebgp-multihop"
-    r"|vrf name '[^']+' protocols bgp neighbor '[^']+' password"
-    r"|vrf name '[^']+' protocols bgp neighbor '[^']+' timers keepalive"
-    r"|vrf name '[^']+' protocols bgp neighbor '[^']+' timers holdtime"
-    r") '[^']+'\s*$"
+    + r"vrf name " + _Q + r" table"
+    + r"|vrf name " + _Q + r" protocols bgp system-as"
+    + r"|vrf name " + _Q + r" protocols bgp parameters router-id"
+    + r"|vrf name " + _Q + r" protocols bgp neighbor " + _Q + r" remote-as"
+    + r"|vrf name " + _Q + r" protocols bgp neighbor " + _Q + r" update-source"
+    + r"|vrf name " + _Q + r" protocols bgp neighbor " + _Q + r" ebgp-multihop"
+    + r"|vrf name " + _Q + r" protocols bgp neighbor " + _Q + r" password"
+    + r"|vrf name " + _Q + r" protocols bgp neighbor " + _Q + r" timers keepalive"
+    + r"|vrf name " + _Q + r" protocols bgp neighbor " + _Q + r" timers holdtime"
+    + r") " + _Q + r"\s*$"
 )
 
 
