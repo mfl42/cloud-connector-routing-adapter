@@ -4,11 +4,130 @@ Ce document liste en langage simple toutes les fonctions de l'adaptateur
 cloud-connector-routing-adapter. Il est destiné aux utilisateurs et
 contributeurs qui veulent comprendre ce que fait le logiciel sans lire le code.
 
-## Ce que fait l'adaptateur
+---
 
-L'adaptateur lit des objets de configuration reseau depuis Kubernetes
-(NodeNetworkConfig, NodeNetplanConfig) et les traduit en commandes VyOS
-(`set ...`) envoyees a un routeur via son API HTTPS.
+## Contexte : Sylva, Kubernetes et les CRDs
+
+### Qu'est-ce que Sylva ?
+
+Sylva est un framework open source de la Linux Foundation, porte par des
+operateurs telecom (Deutsche Telekom, Orange, etc.). Son objectif : fournir
+une pile logicielle complete pour deployer et gerer des infrastructures
+telecom sur Kubernetes.
+
+Dans Sylva, le reseau n'est pas configure manuellement sur chaque routeur.
+A la place, un operateur declare la configuration souhaitee dans Kubernetes,
+et des composants logiciels (les "connecteurs") se chargent de l'appliquer
+sur les equipements reels.
+
+### Qu'est-ce qu'un CRD ?
+
+Un CRD (Custom Resource Definition) est un mecanisme Kubernetes qui permet
+de definir ses propres types d'objets. Par defaut, Kubernetes gere des Pods,
+des Services, des Deployments. Un CRD permet d'ajouter un nouveau type —
+par exemple `NodeNetworkConfig` — que Kubernetes stocke, versionne et
+surveille exactement comme ses objets natifs.
+
+Un CRD permet :
+- de decrire une configuration souhaitee de maniere declarative (YAML/JSON)
+- de la stocker dans l'API Kubernetes avec versioning et controle d'acces
+- de declencher des actions automatiques quand l'objet est cree, modifie ou
+  supprime (via un controller ou un operateur)
+- de rapporter un statut (`status` subresource) pour indiquer si la
+  configuration a ete appliquee avec succes
+
+### Les APIs network-connector de Sylva
+
+Le composant `network-connector` de Sylva definit deux CRDs principaux pour
+la configuration reseau :
+
+**NodeNetworkConfig** — configuration reseau L3 d'un noeud :
+- VRFs (Virtual Routing and Forwarding) avec tables de routage
+- routes statiques IPv4/IPv6
+- voisins BGP avec ASN, timers, filtres import/export
+- policy routes (routage par politique avec filtrage par prefixe/port/protocole)
+- interfaces rattachees aux VRFs (Ethernet, VLAN, bonding, etc.)
+- domaines Layer2 avec VXLAN/EVPN (VNI, bridge, IRB)
+- fabric VRFs avec route targets et filtres EVPN
+
+**NodeNetplanConfig** — configuration reseau L2/L3 d'un noeud au format netplan :
+- adresses IP des interfaces
+- routes statiques avec metrique
+- DHCP v4/v6
+- MTU
+- serveurs DNS
+
+Ces CRDs sont la "source de verite" : ils decrivent l'etat reseau desire.
+Un operateur humain ou un systeme d'orchestration les cree/modifie dans
+Kubernetes. Un connecteur (comme cet adaptateur) les lit et les applique
+sur l'equipement cible.
+
+### Pourquoi HBR ?
+
+Le nom original du composant network-connector dans Sylva etait **HBR**
+(Host-Based Routing). Le projet a ete renomme "cloud-connector" dans
+l'upstream, mais le prefixe `hbr` est conserve dans les noms de packages
+Python (`hbr_vyos_adapter`) pour eviter de casser la compatibilite avec
+les outils et scripts existants.
+
+HBR designe l'approche ou le routage reseau est gere au niveau de l'hote
+(le noeud Kubernetes) plutot qu'au niveau d'un equipement reseau dedie.
+L'hote recoit la configuration via les CRDs et l'applique localement ou
+la delegue a un routeur externe — c'est ce que fait cet adaptateur.
+
+### Qu'est-ce que VyOS ?
+
+VyOS est un systeme d'exploitation reseau open source base sur Linux. Il
+fournit les fonctions d'un routeur professionnel :
+
+- **Routage** : BGP, OSPF, routes statiques, policy routing, VRF
+- **VXLAN/EVPN** : tunnels overlay L2, fabric EVPN avec route targets
+- **Firewall** : filtrage de paquets, zones, NAT
+- **VPN** : IPsec, WireGuard, OpenVPN
+- **Interfaces** : Ethernet, bonding, bridge, VLAN (802.1Q), dummy, tunnel
+- **DNS/DHCP** : serveur et relais
+- **API HTTPS** : configuration programmatique via REST (`/configure`,
+  `/configure-list`, `/retrieve`, `/show`)
+- **CLI** : commandes `set`, `delete`, `commit`, `show` dans un shell
+  structure (similaire a Junos/IOS)
+
+VyOS peut etre deploye comme :
+- une **VM** (KVM, VMware, Hyper-V) — c'est le mode utilise dans ce projet
+- un **conteneur** Docker/Podman (image officielle disponible)
+- une appliance **bare-metal** sur du materiel dedie
+- une instance **cloud** (AWS, GCP, Azure — images marketplace)
+
+### Mode de deploiement actuel
+
+Dans le lab et l'architecture cible actuelle, VyOS tourne en **VM sur un
+hyperviseur bare-metal** (KVM/libvirt). Le cluster Kubernetes et le routeur
+VyOS coexistent sur la meme infrastructure physique.
+
+Ce mode de deploiement est choisi car :
+- il permet d'isoler le routeur du cluster Kubernetes (domaine de panne
+  separe)
+- il donne acces a toutes les fonctions VyOS sans limitation conteneur
+  (interfaces reseau physiques, offload, performances)
+- il correspond au mode de deploiement habituel des operateurs telecom
+
+L'adaptateur est concu pour etre **independant du mode de deploiement** de
+VyOS. Il communique uniquement via l'API HTTPS, donc il fonctionne que VyOS
+soit une VM, un conteneur, ou une appliance physique.
+
+A terme, un deploiement full cloud-native (VyOS en conteneur dans le meme
+cluster Kubernetes, avec l'adaptateur comme sidecar ou DaemonSet) est
+envisageable mais necessite un travail d'integration supplementaire :
+- packaging de l'adaptateur en image conteneur + chart Helm
+- gestion du cycle de vie VyOS conteneurise (restart, upgrade)
+- integration avec les CNI Kubernetes (Calico, Cilium) pour le plan de
+  donnees
+
+### Role de cet adaptateur
+
+Cet adaptateur est le connecteur entre les CRDs Sylva et un routeur VyOS.
+Il lit les objets `NodeNetworkConfig` et `NodeNetplanConfig` depuis
+Kubernetes, les traduit en commandes VyOS (`set ...`), et les envoie au
+routeur via son API HTTPS.
 
 Il fonctionne en boucle : il surveille les changements Kubernetes, calcule
 les differences avec la derniere configuration appliquee, et envoie
