@@ -316,6 +316,57 @@ The following are not mapped yet:
 - Per-interface readiness
 - Exact host-netplan parity
 
+## API Versioning and Auto-Discovery
+
+The upstream Sylva network-connector project uses different API groups depending
+on the deployment context. The adapter handles this transparently:
+
+### Known API Groups
+
+| API Group | Version | Origin |
+|-----------|---------|--------|
+| `network.t-caas.telekom.com` | `v1alpha1` | T-CAAS / Deutsche Telekom production |
+| `network.t-caas.telekom.com` | `v1beta1` | Forward-compatible alias |
+| `sylva.io` | `v1alpha1` | Upstream Sylva Linux Foundation project |
+
+### Auto-Discovery Mechanism
+
+At startup in `--source kubernetes` mode, the adapter registers all known API
+variants and attempts to list documents from each. API groups that return 404
+(not installed on the cluster) are silently skipped. No configuration flag is
+needed.
+
+This means:
+- a cluster running `network.t-caas.telekom.com/v1alpha1` CRDs works out of the box
+- a cluster running `sylva.io/v1alpha1` CRDs also works out of the box
+- a cluster running both simultaneously discovers both (documents from all groups
+  are merged into the same reconcile state)
+
+### Adding New API Variants
+
+New API groups can be registered at runtime before the first list/watch call:
+
+```python
+from hbr_vyos_adapter.k8s_resources import register_resource, CustomResourceSpec
+
+register_resource(CustomResourceSpec(
+    api_version="cloud.example.com/v1",
+    kind="NodeNetworkConfig",
+    plural="nodenetworkconfigs",
+))
+```
+
+### Limitations
+
+- The adapter does not call the Kubernetes API discovery endpoint
+  (`/apis`). It relies on a hardcoded list of known variants. New upstream
+  API groups require a code change (one line in `KNOWN_API_VARIANTS`).
+- CRD schema validation is not performed by the adapter. The adapter parses
+  what it understands and surfaces the rest as warnings or unsupported markers.
+- The local CRD files in `k8s/crds/` are pinned to the `network.t-caas.telekom.com`
+  API group. The drift check script (`scripts/check-sylva-drift.py`) compares
+  against the upstream `sylva-elements/network-connector@main` repository.
+
 ## Mapping Principles
 
 - prefer explicit command generation over hidden inference

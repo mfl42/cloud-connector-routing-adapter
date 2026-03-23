@@ -57,9 +57,12 @@ class KubeDocumentClient:
         documents: list[NodeNetworkConfig | NodeNetplanConfig] = []
         resource_versions: dict[str, str] = {}
         for resource in resolve_resources(resource_kinds):
-            payload = self._get_json(
-                self._resource_url(resource, namespace=namespace, cluster_scoped=cluster_scoped)
+            payload = self._get_json_safe(
+                self._resource_url(resource, namespace=namespace, cluster_scoped=cluster_scoped),
+                resource.kind,
             )
+            if payload is None:
+                continue  # API group not available on this cluster — skip silently
             resource_versions[resource.kind] = str(
                 (payload.get("metadata") or {}).get("resourceVersion") or ""
             )
@@ -296,6 +299,26 @@ class KubeDocumentClient:
         response = requests.get(url, **kwargs)
         if getattr(response, "status_code", 200) >= 400:
             _raise_http_error(response, "document-list")
+        return response.json()
+
+    def _get_json_safe(self, url: str, resource_kind: str) -> dict | None:
+        """Like _get_json but returns None on 404 (API group not installed)."""
+        import requests
+
+        kwargs = {
+            "headers": self._headers(),
+            "timeout": self.timeout,
+            "verify": self._verify_value(),
+        }
+        cert = self._cert_value()
+        if cert is not None:
+            kwargs["cert"] = cert
+        response = requests.get(url, **kwargs)
+        status_code = getattr(response, "status_code", 200)
+        if status_code == 404:
+            return None
+        if status_code >= 400:
+            _raise_http_error(response, resource_kind)
         return response.json()
 
     def _resource_url(

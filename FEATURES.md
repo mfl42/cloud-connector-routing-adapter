@@ -226,6 +226,27 @@ Tests deterministes de cas limites :
 - edge cases filtres BGP (action "next", matchers vides, ge>le, conflits)
 - EVPN + VXLAN + layer2 + IRB (fabric VRF complet)
 
+---
+
+## Compatibilite API upstream
+
+L'adaptateur est compatible avec plusieurs versions de l'API upstream Sylva
+sans configuration :
+
+- `network.t-caas.telekom.com/v1alpha1` — version production T-CAAS
+- `network.t-caas.telekom.com/v1beta1` — alias forward-compatible
+- `sylva.io/v1alpha1` — projet upstream Sylva (Linux Foundation)
+
+Au demarrage en mode `--source kubernetes`, l'adaptateur enregistre tous les
+variants connus et tente de lister les documents de chacun. Les API groups
+qui n'existent pas sur le cluster (reponse 404) sont ignores silencieusement.
+Aucun flag de configuration n'est necessaire.
+
+Limitations :
+- la liste des variants est codee en dur (pas de decouverte Kubernetes `/apis`)
+- un nouveau groupe API upstream necessite l'ajout d'une ligne dans le code
+- les CRDs locaux (`k8s/crds/`) sont fixes sur `network.t-caas.telekom.com`
+
 ### Chaos (12 scenarios)
 
 Injection de fautes simulant des pannes reelles :
