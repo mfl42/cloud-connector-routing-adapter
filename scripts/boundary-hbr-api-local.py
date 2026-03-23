@@ -16,7 +16,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from hbr_vyos_adapter.models import load_document
-from hbr_vyos_adapter.reconcile import reconcile_documents
+from hbr_vyos_adapter.reconcile import reconcile_documents, _BGP_NEIGHBOR_RE, _SCALAR_LEAF_RE
 from hbr_vyos_adapter.state import ReconcileState
 from hbr_vyos_adapter.translator import VyosTranslator
 
@@ -657,6 +657,62 @@ def scenario_desired_state_boundaries() -> dict:
     }
 
 
+def scenario_bgp_delete_regex_quotes() -> dict:
+    """BGP delete consolidation with VRF/neighbor names containing escaped quotes.
+
+    Verifies that _BGP_NEIGHBOR_RE and _SCALAR_LEAF_RE correctly match commands
+    where VRF or neighbor names contain an escaped single quote (\\').
+    """
+    scenario_dir = ARTIFACT_DIR / "bgp-delete-regex-quotes"
+    reset_dir(scenario_dir)
+
+    # Build the exact command strings that the translator would produce.
+    vrf_plain   = "vrf name 'tenant-a' protocols bgp"
+    vrf_quoted  = r"vrf name 'tenant\'s-edge' protocols bgp"
+    peer_plain  = "192.0.2.1"
+    peer_quoted = r"peer\'s-addr"
+
+    cmds_plain = [
+        f"set {vrf_plain} system-as '65001'",
+        f"set {vrf_plain} neighbor '{peer_plain}' remote-as '65002'",
+        f"set {vrf_plain} neighbor '{peer_plain}' address-family ipv4-unicast",
+        f"set {vrf_plain} neighbor '{peer_plain}' password 'secret'",
+    ]
+    cmds_quoted = [
+        f"set {vrf_quoted} system-as '65010'",
+        f"set {vrf_quoted} neighbor '{peer_quoted}' remote-as '65020'",
+        f"set {vrf_quoted} neighbor '{peer_quoted}' address-family ipv6-unicast",
+        f"set {vrf_quoted} neighbor '{peer_quoted}' timers keepalive '30'",
+        f"set {vrf_quoted} neighbor '{peer_quoted}' timers holdtime '90'",
+    ]
+
+    results = {}
+    for label, cmds in (("plain", cmds_plain), ("quoted", cmds_quoted)):
+        neighbor_matches = [bool(_BGP_NEIGHBOR_RE.match(c)) for c in cmds]
+        scalar_matches   = [bool(_SCALAR_LEAF_RE.match(c)) for c in cmds]
+        results[label] = {
+            "commands": cmds,
+            "neighbor_match": neighbor_matches,
+            "scalar_match": scalar_matches,
+        }
+
+    write_json(scenario_dir / "results.json", results)
+
+    # plain names — sanity check
+    assert results["plain"]["neighbor_match"] == [False, True, True, True], results["plain"]
+    assert results["plain"]["scalar_match"]   == [True,  True, False, True], results["plain"]
+
+    # quoted names — the actual bug fix
+    assert results["quoted"]["neighbor_match"] == [False, True, True, True, True], results["quoted"]
+    assert results["quoted"]["scalar_match"]   == [True,  True, False, True, True], results["quoted"]
+
+    return {
+        "scenario": "bgp-delete-regex-quotes",
+        "plainCmds": len(cmds_plain),
+        "quotedCmds": len(cmds_quoted),
+    }
+
+
 def main() -> int:
     ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
     summaries = [
@@ -668,6 +724,7 @@ def main() -> int:
         scenario_zero_command_reconcile_boundary(),
         scenario_malformed_structure_boundaries(),
         scenario_desired_state_boundaries(),
+        scenario_bgp_delete_regex_quotes(),
     ]
     summary = {
         "scenarioCount": len(summaries),
