@@ -534,6 +534,130 @@ def scenario_malformed_structure_boundaries() -> dict:
     }
 
 
+def scenario_desired_state_boundaries() -> dict:
+    """Test NodeNetplanConfig.spec.desiredState (netplan native format) parsing."""
+    scenario_dir = ARTIFACT_DIR / "desired-state-boundaries"
+    reset_dir(scenario_dir)
+
+    # --- wrapped: spec.desiredState.network ---
+    doc_wrapped = load_document(
+        {
+            "apiVersion": "network.t-caas.telekom.com/v1alpha1",
+            "kind": "NodeNetplanConfig",
+            "metadata": {"name": "desired-state-wrapped"},
+            "spec": {
+                "desiredState": {
+                    "network": {
+                        "version": 2,
+                        "ethernets": {
+                            "eth1": {
+                                "addresses": ["192.0.2.10/24"],
+                                "routes": [{"to": "0.0.0.0/0", "via": "192.0.2.1"}],
+                                "mtu": 9000,
+                            },
+                            "eth2": {"dhcp4": True},
+                        },
+                        "nameservers": {"addresses": ["1.1.1.1", "9.9.9.9"]},
+                    }
+                }
+            },
+        }
+    )
+
+    # --- unwrapped: spec.desiredState without network: key ---
+    doc_unwrapped = load_document(
+        {
+            "apiVersion": "network.t-caas.telekom.com/v1alpha1",
+            "kind": "NodeNetplanConfig",
+            "metadata": {"name": "desired-state-unwrapped"},
+            "spec": {
+                "desiredState": {
+                    "ethernets": {
+                        "eth3": {
+                            "addresses": ["198.51.100.5/24"],
+                        }
+                    },
+                    "nameservers": ["8.8.8.8"],
+                }
+            },
+        }
+    )
+
+    # --- bonds section ---
+    doc_bond = load_document(
+        {
+            "apiVersion": "network.t-caas.telekom.com/v1alpha1",
+            "kind": "NodeNetplanConfig",
+            "metadata": {"name": "desired-state-bond"},
+            "spec": {
+                "desiredState": {
+                    "network": {
+                        "bonds": {
+                            "bond0": {
+                                "addresses": ["10.0.0.1/24"],
+                                "dhcp6": True,
+                            }
+                        }
+                    }
+                }
+            },
+        }
+    )
+
+    # --- empty desiredState ---
+    doc_empty = load_document(
+        {
+            "apiVersion": "network.t-caas.telekom.com/v1alpha1",
+            "kind": "NodeNetplanConfig",
+            "metadata": {"name": "desired-state-empty"},
+            "spec": {"desiredState": {}},
+        }
+    )
+
+    translator = VyosTranslator()
+    results = {}
+    for doc in (doc_wrapped, doc_unwrapped, doc_bond, doc_empty):
+        r = translator.translate(doc)
+        results[doc.metadata.name] = {
+            "commands": r.commands,
+            "warnings": r.warnings,
+        }
+
+    write_json(scenario_dir / "results.json", results)
+
+    # wrapped assertions
+    wrapped = results["desired-state-wrapped"]
+    assert "set interfaces ethernet eth1 address '192.0.2.10/24'" in wrapped["commands"], wrapped
+    assert "set interfaces ethernet eth1 mtu '9000'" in wrapped["commands"], wrapped
+    assert "set protocols static route 0.0.0.0/0 next-hop '192.0.2.1'" in wrapped["commands"], wrapped
+    assert "set interfaces ethernet eth2 address 'dhcp'" in wrapped["commands"], wrapped
+    assert "set system name-server '1.1.1.1'" in wrapped["commands"], wrapped
+    assert "set system name-server '9.9.9.9'" in wrapped["commands"], wrapped
+
+    # unwrapped assertions
+    unwrapped = results["desired-state-unwrapped"]
+    assert "set interfaces ethernet eth3 address '198.51.100.5/24'" in unwrapped["commands"], unwrapped
+    assert "set system name-server '8.8.8.8'" in unwrapped["commands"], unwrapped
+
+    # bond assertions
+    bond = results["desired-state-bond"]
+    assert "set interfaces bonding bond0 address '10.0.0.1/24'" in bond["commands"], bond
+    assert "set interfaces bonding bond0 address 'dhcp6'" in bond["commands"], bond
+
+    # empty produces no commands
+    empty = results["desired-state-empty"]
+    assert empty["commands"] == [], empty
+
+    return {
+        "scenario": "desired-state-boundaries",
+        "docCount": 4,
+        "wrappedCommandCount": len(results["desired-state-wrapped"]["commands"]),
+        "unwrappedCommandCount": len(results["desired-state-unwrapped"]["commands"]),
+        "bondCommandCount": len(results["desired-state-bond"]["commands"]),
+        "emptyCommandCount": len(results["desired-state-empty"]["commands"]),
+    }
+
+
 def main() -> int:
     ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
     summaries = [
@@ -544,6 +668,7 @@ def main() -> int:
         scenario_invalid_value_boundaries(),
         scenario_zero_command_reconcile_boundary(),
         scenario_malformed_structure_boundaries(),
+        scenario_desired_state_boundaries(),
     ]
     summary = {
         "scenarioCount": len(summaries),
