@@ -497,6 +497,9 @@ def _build_lease_manager(args) -> LeaseManager:
 
 def _build_document_source(args) -> FileDocumentSource | KubernetesDocumentSource:
     if args.source == "kubernetes":
+        from .k8s_resources import activate_all_known_variants
+
+        activate_all_known_variants()
         return KubernetesDocumentSource(
             client=KubeDocumentClient(
                 _build_kube_connection(

@@ -88,6 +88,18 @@ def register_resource(
         register_model(spec.api_version, spec.kind, factory)
 
 
+def activate_all_known_variants() -> None:
+    """Register all known API variants so the adapter auto-discovers which
+    API group is available on the cluster.
+
+    Call this once at startup before the first list/watch. Resources whose
+    API group does not exist on the cluster will return 404 and be silently
+    skipped by ``list_documents``.
+    """
+    for variant in KNOWN_API_VARIANTS:
+        register_resource(variant)
+
+
 def resolve_resources(resource_kinds: list[str] | None) -> list[CustomResourceSpec]:
     if not resource_kinds:
         return list(SUPPORTED_CUSTOM_RESOURCES)
