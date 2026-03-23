@@ -140,7 +140,37 @@ def _build_document_status(document: DocumentState, *, now: str | None = None) -
         last_transition_time=document.last_applied_at or transition_time,
     )
 
-    conditions = [desired_seen, applied_condition, sync_condition]
+    # CRA readiness conditions — Reconciling / Degraded / Available
+    reconciling = StatusCondition(
+        type="Reconciling",
+        status="True" if phase in ("PendingApply", "Drifted") else "False",
+        reason="DesiredNotApplied" if phase in ("PendingApply", "Drifted") else "DesiredApplied",
+        message=(
+            "Desired and applied state are different; apply is pending."
+            if phase in ("PendingApply", "Drifted")
+            else "No reconciliation needed."
+        ),
+        last_transition_time=transition_time,
+    )
+    degraded = StatusCondition(
+        type="Degraded",
+        status="True" if phase == "Error" else "False",
+        reason="LastOperationFailed" if phase == "Error" else "NoError",
+        message=document.last_error or "No errors recorded.",
+        last_transition_time=transition_time,
+    )
+    available = StatusCondition(
+        type="Available",
+        status="True" if phase == "InSync" else "False",
+        reason="InSync" if phase == "InSync" else "NotInSync",
+        message=(
+            "Adapter is in sync with the desired state."
+            if phase == "InSync"
+            else "Adapter is not yet in sync with the desired state."
+        ),
+        last_transition_time=transition_time,
+    )
+    conditions = [desired_seen, applied_condition, sync_condition, reconciling, degraded, available]
     if document.deleted:
         conditions.append(
             StatusCondition(
