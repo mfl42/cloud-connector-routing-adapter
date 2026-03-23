@@ -315,47 +315,60 @@ runtime without modifying `k8s_resources.py`.
 
 ## Planned
 
-Gaps are grouped by theme. Each entry names the affected field or component,
-describes the current behaviour, and states what is missing.
+Items are ordered by **priority × complexity** — highest priority and lowest
+complexity first. Each entry carries a complexity label (trivial / low /
+medium / high / very high) and a priority label (high / medium / low).
 
 ---
 
-### Translation gaps — NodeNetworkConfig
+### 1 — Design decisions (trivial / high priority)
 
-#### ~~Policy route: direct next-hop action not emitted~~ ✓
+These items have no VyOS equivalent or are intentionally out of scope. They
+are closed as design decisions, not implementation gaps.
 
-`policyRoute.nextHop.address` is now emitted as
-`set policy route '<name>' rule '<id>' set nexthop '<address>'`.
-Address takes priority over `vrf` and `table` targets.
-Address-family mismatch between the rule and the nexthop produces a warning
-and skips the nexthop command.
+#### ~~Interface route on-link flag — no VyOS equivalent~~ (by design)
 
-#### ~~Policy route: only the first protocol is used~~ ✓
+`route.on-link` suppresses next-hop reachability checks in netplan. VyOS has
+no equivalent knob — all static routes are installed regardless of next-hop
+reachability. The flag is silently ignored; no warning is emitted because the
+VyOS behaviour already matches the intent.
 
-`_translate_policy_route()` now iterates over all supported protocols and emits
-one VyOS rule per protocol (incrementing rule_id). Unsupported protocols are
-skipped; if all are unsupported the rule is omitted with a warning.
+#### ~~`spec.revision` not forwarded to VyOS~~ (by design)
 
-#### ~~Policy route: only the first port is used~~ ✓
+`NodeNetworkConfig.spec.revision` is a Kubernetes-side revision tag with no
+VyOS CLI equivalent. It is tracked for reconcile visibility and surfaced as an
+informational warning. Emitting it as a VyOS config node would require an
+opaque description string with no operational value on the routing target.
+Design decision: revision tracking stays on the Kubernetes side only.
 
-`sourcePorts` and `destinationPorts` are now joined with commas
-(`",".join(...)`) and emitted as a single VyOS port value, which VyOS
-natively accepts as a comma-separated list.
+---
 
-#### ~~Static route: next-hop interface not mapped~~ ✓
+### 2 — BGP delete consolidation regex (low / high priority)
 
-`NextHop` gains an `interface` field (parsed from `interface`, `dev`, or
-`outboundInterface`). `_translate_static_route` now emits
-`set ... static route '<prefix>' interface '<iface>'` when only an interface
-is set, or `next-hop '<addr>'` when an address is set. Both fields are
-accepted; address takes priority when both are present.
+#### BGP delete consolidation regex misses quoted special characters
 
-#### ~~BGP: peer password not mapped~~ ✓
+The regex `r"^set (vrf name '[^']+' protocols bgp neighbor '[^']+')(?:\s|$)"`
+does not handle VRF names or neighbor addresses that contain an escaped single
+quote. Such commands are not consolidated and instead generate individual leaf
+deletes, which may leave VyOS with a partially configured neighbor after commit.
 
-`password` / `peerPassword` / `bgpPassword` are now parsed into `BgpPeer.password`
-and emitted as `set ... neighbor '<addr>' password '<value>'`.
+---
 
-#### BGP: route-map / import-export filter compilation not implemented
+### 3 — Rollback on apply failure (medium / high priority)
+
+When a `/configure-list` call is accepted by VyOS but the subsequent commit
+fails, the adapter has no mechanism to roll back staged changes. A subsequent
+apply may encounter a partially staged configuration.
+
+Current behaviour: apply error is propagated; state is not updated; no
+rollback is attempted.
+
+Planned: invoke `rollback` via the VyOS API on detected commit failure, then
+re-attempt from a clean baseline.
+
+---
+
+### 4 — BGP route-map / import-export filter compilation (high / high priority)
 
 The upstream CRD defines per-address-family `importFilter` and `exportFilter`
 objects (with `defaultAction`, `items`, prefix matchers, community modifiers).
@@ -368,103 +381,19 @@ surfaced as "unknown fields") and emitted as a dedicated unsupported marker:
 
 What is missing: compilation of filter specs into VyOS `set policy route-map`
 objects and binding them to the BGP neighbor per address-family. This requires
-a new translation stage (route-map object registry + per-rule emit) and is a
-planned but non-trivial addition.
-
-#### ~~BGP: timers not mapped~~ ✓
-
-`keepalive` and `holdtime` are parsed into `BgpPeer.keepalive` / `BgpPeer.holdtime`
-(also via a nested `timers` dict) and emitted together as
-`set ... timers keepalive` / `set ... timers holdtime`. If only one is present
-a warning is emitted and both are skipped (VyOS requires both to be set together).
-
-#### ~~BGP: BFD and graceful-restart not mapped~~ ✓
-
-`bfd` and `gracefulRestart` / `graceful-restart` are parsed into `BgpPeer.bfd`
-and `BgpPeer.graceful_restart` and emitted as leaf `set ... bfd` /
-`set ... graceful-restart` nodes.
-
-#### ~~BGP: global router-id not mapped~~ ✓
-
-`routerId` / `router-id` / `bgpRouterId` are parsed into `VrfSpec.bgp_router_id`
-and emitted as `set vrf name '<n>' protocols bgp parameters router-id '<id>'`.
+a new translation stage (route-map object registry + per-rule emit).
 
 ---
 
-### Translation gaps — NodeNetplanConfig
+### 5 — Cluster-scoped CRD watch (medium / medium priority)
 
-#### ~~Interface family assumed to be ethernet~~ ✓
-
-`_netplan_interface_path()` now calls `_infer_interface_type()` for both the
-base interface and VLAN sub-interfaces. All address, MTU, and DHCP commands
-use the inferred type (`bonding`, `bridge`, `dummy`, `wireguard`, etc.),
-falling back to `ethernet` only when the prefix is unrecognised.
-
-#### ~~Interface MTU not mapped~~ ✓
-
-`InterfaceConfig.mtu` is parsed from the spec dict and emitted as
-`set interfaces <family> <name> mtu '<value>'`.
-
-#### ~~Interface route metric not mapped~~ ✓
-
-`RouteConfig.metric` is parsed and, when present, appended as
-`distance '<metric>'` to the static route next-hop command.
-
-#### Interface route on-link flag not mapped
-
-`route.on-link` (used in netplan to suppress next-hop reachability checks) is
-not translated. VyOS does not have a direct equivalent but the intent needs
-explicit handling.
-
-#### ~~DHCP / dynamic address not mapped~~ ✓
-
-`InterfaceConfig.dhcp4` and `InterfaceConfig.dhcp6` are parsed from the spec
-dict and emitted as `set interfaces <family> <name> address 'dhcp'` /
-`set interfaces <family> <name> address 'dhcp6'`.
+The controller defaults to namespace-scoped list/watch. Cluster-scoped CRD
+deployments require `--cluster-scoped` and are not covered by the local
+regression harness.
 
 ---
 
-### Convergence gaps
-
-#### Rollback on apply failure
-
-When a `/configure-list` call is accepted by VyOS but the subsequent commit
-fails, the adapter has no mechanism to roll back staged changes. A subsequent
-apply may encounter a partially staged configuration.
-
-Current behaviour: apply error is propagated; state is not updated; no
-rollback is attempted.
-
-Planned: invoke `rollback` via the VyOS API on detected commit failure, then
-re-attempt from a clean baseline.
-
-#### ~~No delete emitted for policy route interface binding on document change~~ ✓
-
-`set policy route '<name>' interface '<if>'` is included in `applied_commands`.
-When the interface changes, `_compute_diff_deletes` emits
-`delete policy route '<name>' interface '<old>'` before the new set.
-The value is correctly kept in the delete path because `interface` is a
-list-key node in VyOS (not a scalar leaf).
-
-#### ~~Scalar leaf delete includes value — VyOS rejects path~~ ✓
-
-`_compute_diff_deletes()` now calls `_to_delete_path()` which strips the
-trailing value from known scalar leaf nodes (`table`, `system-as`, `router-id`,
-`remote-as`, `update-source`, `ebgp-multihop`, `password`, `timers keepalive`,
-`timers holdtime`). VyOS requires the path without a value for these nodes.
-
-#### ~~No delete emitted for VRF table change~~ ✓
-
-When `table` changes, the old `set vrf name '<name>' table '<old>'` falls into
-`removed_cmds`. `_to_delete_path` matches `_SCALAR_LEAF_RE` and emits
-`delete vrf name '<name>' table` (value stripped, as VyOS requires), before
-the new `set vrf name '<name>' table '<new>'` is applied.
-
----
-
-### Status and operator contract gaps
-
-#### Full CRA status contract not implemented
+### 6 — Full CRA status contract (high / medium priority)
 
 The adapter exports a local `AdapterStatusReport` and patches the Kubernetes
 `status` subresource with phase, revision, warnings, and conditions. The full
@@ -478,16 +407,25 @@ Deleted).
 Missing: rollout readiness gates, per-interface readiness, CRA-level
 `reconciling`/`degraded`/`available` conditions.
 
-#### `spec.revision` not forwarded to VyOS
+---
 
-`NodeNetworkConfig.spec.revision` is tracked for reconcile visibility and
-surfaced as a translation warning. No VyOS config command is emitted for it.
-This is by design today but means the routing target has no visibility of the
-HBR revision currently applied.
+### 7 — Leader election (medium / low priority)
+
+Running multiple adapter instances against the same Kubernetes namespace and
+VyOS target produces conflicting applies. No leader-election or locking
+mechanism is implemented.
 
 ---
 
-### L2 / VNI
+### 8 — Real informer loop (high / low priority)
+
+The current Kubernetes source uses a manual list-then-watch loop with
+stale-watch recovery via relist. A shared-cache informer with event handlers
+would reduce API server load and improve change detection latency.
+
+---
+
+### 9 — L2 / VNI — VXLAN + EVPN (very high / low priority)
 
 `spec.layer2s` in `NodeNetworkConfig` is detected and surfaced as unsupported.
 No translation is attempted.
@@ -495,24 +433,85 @@ No translation is attempted.
 VXLAN interface creation (`set interfaces vxlan vxlan<n> ...`), VNI-to-VRF
 binding, and EVPN address-family activation under BGP are all absent.
 
+Deferred until the upstream `network-connector` API stabilises (merge into
+sylva-core in progress — API group and field names may change).
+
 ---
 
-### Kubernetes integration gaps
+### Completed translation gaps — NodeNetworkConfig
 
-#### Real informer loop
+#### ~~Policy route: direct next-hop action not emitted~~ ✓
 
-The current Kubernetes source uses a manual list-then-watch loop with
-stale-watch recovery via relist. A shared-cache informer with event handlers
-would reduce API server load and improve change detection latency.
+`policyRoute.nextHop.address` is now emitted as
+`set policy route '<name>' rule '<id>' set nexthop '<address>'`.
+Address takes priority over `vrf` and `table` targets.
+Address-family mismatch produces a warning and skips the nexthop command.
 
-#### Cluster-scoped CRD watch not exercised by default
+#### ~~Policy route: only the first protocol is used~~ ✓
 
-The controller defaults to namespace-scoped list/watch. Cluster-scoped CRD
-deployments require `--cluster-scoped` and are not covered by the local
-regression harness.
+`_translate_policy_route()` now iterates over all supported protocols and emits
+one VyOS rule per protocol (incrementing rule_id). Unsupported protocols are
+skipped; if all are unsupported the rule is omitted with a warning.
 
-#### No leader election
+#### ~~Policy route: only the first port is used~~ ✓
 
-Running multiple adapter instances against the same Kubernetes namespace and
-VyOS target produces conflicting applies. No leader-election or locking
-mechanism is implemented.
+`sourcePorts` and `destinationPorts` are now joined with commas and emitted as
+a single VyOS port value, which VyOS natively accepts as a comma-separated list.
+
+#### ~~Static route: next-hop interface not mapped~~ ✓
+
+`NextHop.interface` is parsed and emitted as
+`set ... static route '<prefix>' interface '<iface>'`.
+
+#### ~~BGP: peer password not mapped~~ ✓
+
+Parsed into `BgpPeer.password` and emitted as `set ... neighbor '<addr>' password '<value>'`.
+
+#### ~~BGP: timers not mapped~~ ✓
+
+`keepalive` and `holdtime` emitted as `set ... timers keepalive` / `set ... timers holdtime`.
+Both must be present together (VyOS requirement); missing one produces a warning.
+
+#### ~~BGP: BFD and graceful-restart not mapped~~ ✓
+
+Emitted as `set ... bfd` / `set ... graceful-restart` leaf nodes.
+
+#### ~~BGP: global router-id not mapped~~ ✓
+
+Emitted as `set vrf name '<n>' protocols bgp parameters router-id '<id>'`.
+
+---
+
+### Completed translation gaps — NodeNetplanConfig
+
+#### ~~Interface family assumed to be ethernet~~ ✓
+
+`_netplan_interface_path()` now calls `_infer_interface_type()` for both base
+and VLAN sub-interfaces. Falls back to `ethernet` only when prefix is unrecognised.
+
+#### ~~Interface MTU not mapped~~ ✓
+
+Emitted as `set interfaces <family> <name> mtu '<value>'`.
+
+#### ~~Interface route metric not mapped~~ ✓
+
+Appended as `distance '<metric>'` to the static route next-hop command.
+
+#### ~~DHCP / dynamic address not mapped~~ ✓
+
+Emitted as `set interfaces <family> <name> address 'dhcp'` / `'dhcp6'`.
+
+#### ~~NodeNetplanConfig.spec.desiredState (netplan native format)~~ ✓
+
+Dual-format parsing: `spec.desiredState.network.{ethernets,bonds,...}` (upstream
+netplan.State, wrapped and unwrapped) and legacy `spec.interfaces` / `spec.ethernets`.
+
+---
+
+### Completed convergence gaps
+
+#### ~~No delete emitted for policy route interface binding on document change~~ ✓
+
+#### ~~Scalar leaf delete includes value — VyOS rejects path~~ ✓
+
+#### ~~No delete emitted for VRF table change~~ ✓
