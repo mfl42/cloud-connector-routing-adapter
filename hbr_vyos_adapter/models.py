@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
+
+# Type alias for document factory functions.
+DocumentFactory = Callable[[dict[str, Any]], "NodeNetworkConfig | NodeNetplanConfig"]
 
 
 @dataclass(slots=True)
@@ -393,13 +396,80 @@ class NodeNetplanConfig:
         )
 
 
-def load_document(data: dict[str, Any]) -> NodeNetworkConfig | NodeNetplanConfig:
-    kind = data.get("kind")
-    if kind == "NodeNetworkConfig":
-        return NodeNetworkConfig.from_dict(data)
-    if kind == "NodeNetplanConfig":
-        return NodeNetplanConfig.from_dict(data)
-    raise ValueError(f"unsupported document kind: {kind!r}")
+class ModelRegistry:
+    """Maps ``(api_version, kind)`` pairs to document factory functions.
+
+    Lookup order:
+    1. Exact ``(api_version, kind)`` match.
+    2. Kind-only fallback (first registered entry for that kind), so unknown
+       future API versions degrade gracefully to the nearest known parser.
+    """
+
+    def __init__(self) -> None:
+        self._registry: dict[tuple[str, str], DocumentFactory] = {}
+
+    def register(self, api_version: str, kind: str, factory: DocumentFactory) -> None:
+        self._registry[(api_version, kind)] = factory
+
+    def load(self, data: dict[str, Any]) -> "NodeNetworkConfig | NodeNetplanConfig":
+        api_version = data.get("apiVersion", "")
+        kind = data.get("kind", "")
+
+        factory = self._registry.get((api_version, kind))
+        if factory is not None:
+            return factory(data)
+
+        # Fallback: any registered entry for this kind.
+        for (_, k), f in self._registry.items():
+            if k == kind:
+                return f(data)
+
+        raise ValueError(
+            f"unsupported document kind: {kind!r} (apiVersion: {api_version!r})"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Global registry — pre-populated with all built-in document kinds.
+# Call register_model() at runtime to add custom kinds or API groups.
+# ---------------------------------------------------------------------------
+_REGISTRY = ModelRegistry()
+
+# t-caas.telekom.com — v1alpha1 (current)
+_REGISTRY.register(
+    "network.t-caas.telekom.com/v1alpha1", "NodeNetworkConfig", NodeNetworkConfig.from_dict
+)
+_REGISTRY.register(
+    "network.t-caas.telekom.com/v1alpha1", "NodeNetplanConfig", NodeNetplanConfig.from_dict
+)
+# t-caas.telekom.com — v1beta1 alias (same parsers, forward-compatible)
+_REGISTRY.register(
+    "network.t-caas.telekom.com/v1beta1", "NodeNetworkConfig", NodeNetworkConfig.from_dict
+)
+_REGISTRY.register(
+    "network.t-caas.telekom.com/v1beta1", "NodeNetplanConfig", NodeNetplanConfig.from_dict
+)
+# Sylva project — sylva.io/v1alpha1 (field-compatible with t-caas models)
+_REGISTRY.register(
+    "sylva.io/v1alpha1", "NodeNetworkConfig", NodeNetworkConfig.from_dict
+)
+_REGISTRY.register(
+    "sylva.io/v1alpha1", "NodeNetplanConfig", NodeNetplanConfig.from_dict
+)
+
+
+def load_document(data: dict[str, Any]) -> "NodeNetworkConfig | NodeNetplanConfig":
+    """Load a document dict into its typed model, dispatching by apiVersion + kind."""
+    return _REGISTRY.load(data)
+
+
+def register_model(api_version: str, kind: str, factory: DocumentFactory) -> None:
+    """Register a custom ``(api_version, kind)`` factory at runtime.
+
+    Use this to add new API groups or extend existing kinds without modifying
+    this module.  Registering an already-known key replaces the existing entry.
+    """
+    _REGISTRY.register(api_version, kind, factory)
 
 
 def _string_list(value: Any) -> list[str]:
