@@ -30,11 +30,74 @@ jobs:
           python3 -m hbr_vyos_adapter.cli plan \
             --file examples/node-network-config.json
 
-  # ── 2. Smoke test — dry-run against VyOS VM ───────────────────────────────
+  # ── 2. Boundary tests (pure Python, no VyOS) ─────────────────────────────
+  boundary:
+    name: Boundary conditions
+    runs-on: [self-hosted, venus]
+    needs: check-examples
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install package
+        run: pip install -e .
+
+      - name: Run boundary tests
+        run: python3 scripts/boundary-hbr-api-local.py
+
+      - name: Upload boundary artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: boundary-artifacts
+          path: artifacts/private/hbr-boundary-local/
+
+  # ── 3. Chaos tests (pure Python, no VyOS) ────────────────────────────────
+  chaos:
+    name: Chaos scenarios
+    runs-on: [self-hosted, venus]
+    needs: check-examples
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install package
+        run: pip install -e .
+
+      - name: Run chaos scenarios
+        run: python3 scripts/chaos-hbr-api-local.py
+
+      - name: Upload chaos artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chaos-artifacts
+          path: artifacts/private/hbr-chaos-local/
+
+  # ── 4. Fuzz tests (pure Python, 120 iterations) ──────────────────────────
+  fuzz:
+    name: Fuzz (120 iterations)
+    runs-on: [self-hosted, venus]
+    needs: check-examples
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install package
+        run: pip install -e .
+
+      - name: Run fuzz harness
+        run: python3 scripts/fuzz-hbr-api-local.py --iterations 120
+
+      - name: Upload fuzz artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts
+          path: artifacts/private/hbr-fuzz-local/
+
+  # ── 5. Smoke test — dry-run against VyOS VM ───────────────────────────────
   smoke-plan:
     name: Smoke — plan phase (dry run)
     runs-on: [self-hosted, venus]
-    needs: check-examples
+    needs: [check-examples, boundary, chaos, fuzz]
     steps:
       - uses: actions/checkout@v4
 
