@@ -9,7 +9,7 @@ questions:
 - what failed during development and was corrected
 - what is still outside the current stability claim
 
-The current report reflects the branch state as of March 20, 2026.
+The current report reflects the branch state as of March 23, 2026.
 
 ## Scope Of The Stability Claim
 
@@ -60,6 +60,85 @@ The live campaigns in this report were executed against:
 - management/control path: VyOS HTTPS API
 
 ## Executed Campaigns
+
+### 2026-03-23 — main and dev sync validation
+
+Context:
+
+- PRs #8, #9, #10, #11 were merged directly to `main` during the CI setup session
+- `dev` was 10 commits behind `main` and had never been tested against those changes
+- This campaign validates `main` as the baseline, then confirms `dev` after syncing
+
+Branches tested:
+
+- `main` at `cf93da6` (Merge pull request #11 — feat/vyos-build-matrix)
+- `dev` after fast-forward merge from `main`
+
+#### Fast regression — main
+
+Command:
+
+```bash
+pip install -e .
+bash scripts/check_examples.sh
+python3 -m hbr_vyos_adapter.cli plan --file examples/node-network-config.json
+```
+
+Result: passing
+
+#### Boundary — main
+
+Command:
+
+```bash
+python3 scripts/boundary-hbr-api-local.py
+```
+
+Result: `7` scenarios — all passed
+
+#### Chaos — main
+
+Command:
+
+```bash
+python3 scripts/chaos-hbr-api-local.py
+```
+
+Result: `4` scenarios — all passed
+
+#### Fuzz — main (30 iterations)
+
+Command:
+
+```bash
+python3 scripts/fuzz-hbr-api-local.py --iterations 30
+```
+
+Result: `30` cases — all passed, `0` crashes, every repeat pass produced `0` pending commands
+
+#### dev sync
+
+Command:
+
+```bash
+git checkout dev && git merge main && git push origin dev
+```
+
+Result: fast-forward, no conflicts
+
+#### Boundary / Chaos / Fuzz — dev (post-sync)
+
+Commands:
+
+```bash
+python3 scripts/boundary-hbr-api-local.py
+python3 scripts/chaos-hbr-api-local.py
+python3 scripts/fuzz-hbr-api-local.py --iterations 30
+```
+
+Results: identical to `main` — boundary `7/7`, chaos `4/4`, fuzz `30/30`
+
+---
 
 ### Fast Regression
 
