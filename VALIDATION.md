@@ -9,7 +9,7 @@ questions:
 - what failed during development and was corrected
 - what is still outside the current stability claim
 
-The current report reflects the branch state as of March 23, 2026 (main after PR #30 — leader election + informer loop).
+The current report reflects the branch state as of March 23, 2026 (main after PR #32 — test enrichment).
 
 ## Scope Of The Stability Claim
 
@@ -137,6 +137,29 @@ python3 scripts/fuzz-hbr-api-local.py --iterations 30
 ```
 
 Results: identical to `main` — boundary `7/7`, chaos `4/4`, fuzz `30/30`
+
+---
+
+### 2026-03-23 — Test enrichment post-audit
+
+Context:
+
+- Coverage audit identified 22 gaps; 12 closed in this campaign
+- BGP filter edge cases: action "next", empty matchers, ge>le, conflicting communities
+- Leader election: acquire() crash, multi-cycle renewal
+- Fuzz: BGP filters now generated in ~40% of peers (commands 4298 → 6086)
+
+Branches tested: `fix/test-enrichment-items-4-7-8` → `dev` → `main` (PR #31, #32)
+
+Commands:
+
+```bash
+python3 scripts/boundary-hbr-api-local.py
+python3 scripts/chaos-hbr-api-local.py
+python3 scripts/fuzz-hbr-api-local.py --iterations 120
+```
+
+Results: boundary `15/15`, chaos `12/12`, fuzz `120/120` (6086 commands)
 
 ---
 
