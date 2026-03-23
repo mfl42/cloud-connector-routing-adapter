@@ -532,3 +532,84 @@ netplan.State, wrapped and unwrapped) and legacy `spec.interfaces` / `spec.ether
 #### ~~Scalar leaf delete includes value — VyOS rejects path~~ ✓
 
 #### ~~No delete emitted for VRF table change~~ ✓
+
+---
+
+## Current Limitations
+
+The following are known limitations of the current implementation. They are
+documented here for visibility and may be addressed in a future iteration.
+
+### Translation limitations
+
+- **mirrorAcls** — `layer2s.<name>.mirrorAcls` are detected and surfaced as
+  unsupported. GRE traffic mirroring is VyOS-version-dependent and not yet
+  mapped to VyOS commands.
+
+- **Simple string route-map references** — `routeMap`, `prefixList`,
+  `distributionList` fields on BGP peers are recognised but not compiled into
+  VyOS policy objects. Only the structured `importFilter`/`exportFilter` CRD
+  objects are compiled. String references remain marked as unsupported.
+
+- **VTEP source-address** — the VXLAN tunnel source IP is not present in the
+  upstream CRD. VyOS uses the loopback or default route as source. For explicit
+  control in multi-node EVPN fabrics, a future `--vtep-source-address` CLI
+  parameter could be added (per-node property, not per-document).
+
+- **Route Distinguisher** — absent from the CRD. VyOS auto-generates the RD
+  as `<router-id>:<vni>`. No manual override is possible through the adapter.
+
+- **Per-interface readiness** — the CRA status conditions report document-level
+  readiness (Available, Reconciling, Degraded) but not per-interface state.
+  Correlating desired interface config with VyOS operational state would require
+  reading back from the VyOS API, which has no stable upstream contract yet.
+
+### API versioning limitations
+
+- The list of known API groups (`network.t-caas.telekom.com`, `sylva.io`) is
+  hardcoded. The adapter does not call the Kubernetes API discovery endpoint
+  (`/apis`). A new upstream API group requires adding one line to
+  `KNOWN_API_VARIANTS` in `k8s_resources.py`.
+
+- CRD schema validation is not performed by the adapter. It parses what it
+  understands and surfaces the rest as warnings or unsupported markers.
+
+- Local CRD files in `k8s/crds/` are pinned to `network.t-caas.telekom.com`.
+  The drift check script (`scripts/check-sylva-drift.py`) compares against
+  upstream `sylva-elements/network-connector@main`.
+
+---
+
+## Next Steps
+
+Potential future work, not yet scheduled. Ordered by operational value.
+
+### Live validation on VyOS lab
+
+Run the adapter against the real VyOS VM (192.0.2.230) with the full
+command set including EVPN/VXLAN. Validate that generated commands are
+accepted and produce the expected configuration.
+
+### CI/CD — GitHub Actions
+
+Automate the 3 test suites (boundary, chaos, fuzz) on every PR. The
+required status checks are already defined in branch protection but not
+yet wired to a workflow.
+
+### Upstream API tracking
+
+Monitor `sylva-elements/network-connector@main` for API group renaming
+(merge into sylva-core is in progress). Update `KNOWN_API_VARIANTS` and
+local CRDs when the upstream stabilises.
+
+### Container packaging
+
+Build a container image and Helm chart for deploying the adapter as a
+Kubernetes pod. Prerequisite for leader election to be useful in
+production.
+
+### Observability — Prometheus metrics
+
+Expose counters (commands generated, apply successes/failures, reconcile
+latency, watch events) as Prometheus metrics. Useful for alerting in a
+production deployment.
