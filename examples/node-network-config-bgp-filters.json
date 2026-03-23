@@ -1,0 +1,73 @@
+{
+  "apiVersion": "network.t-caas.telekom.com/v1alpha1",
+  "kind": "NodeNetworkConfig",
+  "metadata": {
+    "name": "bgp-filter-example",
+    "namespace": "default"
+  },
+  "spec": {
+    "revision": "bgp-filters-v1",
+    "localVRFs": {
+      "tenant-a": {
+        "table": 100,
+        "localASN": 65000,
+        "bgpPeers": [
+          {
+            "address": "192.0.2.1",
+            "remoteASN": 65010,
+            "addressFamilies": ["ipv4-unicast"],
+            "ipv4": {
+              "importFilter": {
+                "defaultAction": { "type": "reject" },
+                "items": [
+                  {
+                    "action": {
+                      "type": "accept",
+                      "modifyRoute": {
+                        "addCommunities": ["65000:100"],
+                        "additiveCommunities": true
+                      }
+                    },
+                    "matcher": {
+                      "prefix": { "prefix": "10.0.0.0/8", "ge": 16, "le": 24 }
+                    }
+                  },
+                  {
+                    "action": { "type": "accept" },
+                    "matcher": {
+                      "bgpCommunity": { "community": "65010:200", "exactMatch": true }
+                    }
+                  }
+                ]
+              },
+              "exportFilter": {
+                "defaultAction": { "type": "accept" }
+              }
+            }
+          },
+          {
+            "address": "2001:db8::1",
+            "remoteASN": 65020,
+            "addressFamilies": ["ipv6-unicast"],
+            "ipv6": {
+              "importFilter": {
+                "defaultAction": { "type": "accept" },
+                "items": [
+                  {
+                    "action": {
+                      "type": "reject",
+                      "modifyRoute": { "removeAllCommunities": true }
+                    },
+                    "matcher": {
+                      "prefix": { "prefix": "2001:db8:dead::/48" }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}

@@ -121,6 +121,104 @@ class StaticRoute:
 
 
 @dataclass(slots=True)
+class BgpFilterAction:
+    type: str  # accept, reject, next
+    add_communities: list[str] = field(default_factory=list)
+    additive_communities: bool = False
+    remove_all_communities: bool = False
+    remove_communities: list[str] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "BgpFilterAction":
+        data = _mapping_or_raise(data, "filterAction")
+        modify = _mapping_or_raise(data.get("modifyRoute"), "modifyRoute", allow_none=True)
+        return cls(
+            type=data.get("type", "reject"),
+            add_communities=_string_list(modify.get("addCommunities")),
+            additive_communities=bool(modify.get("additiveCommunities", False)),
+            remove_all_communities=bool(modify.get("removeAllCommunities", False)),
+            remove_communities=_string_list(modify.get("removeCommunities")),
+        )
+
+
+@dataclass(slots=True)
+class BgpPrefixMatcher:
+    prefix: str
+    ge: int | None = None
+    le: int | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "BgpPrefixMatcher":
+        data = _mapping_or_raise(data, "prefixMatcher")
+        return cls(
+            prefix=data.get("prefix", ""),
+            ge=_int_or_none(data.get("ge")),
+            le=_int_or_none(data.get("le")),
+        )
+
+
+@dataclass(slots=True)
+class BgpCommunityMatcher:
+    community: str
+    exact_match: bool = False
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "BgpCommunityMatcher":
+        data = _mapping_or_raise(data, "communityMatcher")
+        return cls(
+            community=data.get("community", ""),
+            exact_match=bool(data.get("exactMatch", False)),
+        )
+
+
+@dataclass(slots=True)
+class BgpFilterItem:
+    action: BgpFilterAction
+    prefix: BgpPrefixMatcher | None = None
+    community: BgpCommunityMatcher | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "BgpFilterItem":
+        data = _mapping_or_raise(data, "filterItem")
+        matcher = _mapping_or_raise(data.get("matcher"), "matcher", allow_none=True)
+        prefix = BgpPrefixMatcher.from_dict(matcher["prefix"]) if "prefix" in matcher else None
+        community = (
+            BgpCommunityMatcher.from_dict(matcher["bgpCommunity"])
+            if "bgpCommunity" in matcher
+            else None
+        )
+        return cls(
+            action=BgpFilterAction.from_dict(data.get("action", {})),
+            prefix=prefix,
+            community=community,
+        )
+
+
+@dataclass(slots=True)
+class BgpFilter:
+    default_action: BgpFilterAction
+    items: list[BgpFilterItem] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "BgpFilter":
+        data = _mapping_or_raise(data, "filter")
+        items_raw = data.get("items") or []
+        return cls(
+            default_action=BgpFilterAction.from_dict(data.get("defaultAction", {})),
+            items=[BgpFilterItem.from_dict(item) for item in items_raw if isinstance(item, dict)],
+        )
+
+
+def _parse_bgp_filter(data: dict[str, Any] | None, key: str) -> "BgpFilter | None":
+    if data is None:
+        return None
+    obj = data.get(key)
+    if not isinstance(obj, dict):
+        return None
+    return BgpFilter.from_dict(obj)
+
+
+@dataclass(slots=True)
 class BgpPeer:
     address: str | None = None
     remote_as: str | None = None
@@ -132,12 +230,18 @@ class BgpPeer:
     bfd: bool = False
     graceful_restart: bool = False
     address_families: list[str] = field(default_factory=list)
+    ipv4_import_filter: BgpFilter | None = None
+    ipv4_export_filter: BgpFilter | None = None
+    ipv6_import_filter: BgpFilter | None = None
+    ipv6_export_filter: BgpFilter | None = None
     raw: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "BgpPeer":
         data = _mapping_or_raise(data, "bgpPeer")
         timers = _mapping_or_raise(data.get("timers"), "bgpPeer.timers", allow_none=True)
+        ipv4_obj = data.get("ipv4") if isinstance(data.get("ipv4"), dict) else None
+        ipv6_obj = data.get("ipv6") if isinstance(data.get("ipv6"), dict) else None
         return cls(
             address=_string_or_none(
                 _first_value(
@@ -195,6 +299,10 @@ class BgpPeer:
                     "afiSafis",
                 )
             ),
+            ipv4_import_filter=_parse_bgp_filter(ipv4_obj, "importFilter"),
+            ipv4_export_filter=_parse_bgp_filter(ipv4_obj, "exportFilter"),
+            ipv6_import_filter=_parse_bgp_filter(ipv6_obj, "importFilter"),
+            ipv6_export_filter=_parse_bgp_filter(ipv6_obj, "exportFilter"),
             raw=data,
         )
 

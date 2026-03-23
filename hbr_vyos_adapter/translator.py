@@ -5,6 +5,10 @@ from ipaddress import ip_address
 from ipaddress import ip_interface
 from ipaddress import ip_network
 
+import re
+
+from .models import BgpFilter
+from .models import BgpFilterItem
 from .models import BgpPeer
 from .models import NodeNetplanConfig
 from .models import NodeNetworkConfig
@@ -446,22 +450,26 @@ class VyosTranslator:
         for family in families:
             result.commands.append(f"{peer_root} address-family {family}")
 
-        # Route-map / prefix-list / filter fields — recognised but not yet compiled
-        # into VyOS route-map objects. Surfaced as a dedicated unsupported marker.
-        _FILTER_KEYS = {
+        # Compile importFilter / exportFilter into VyOS route-map objects.
+        _compiled_filters = self._compile_peer_filters(vrf_name, peer, families, peer_root, result)
+
+        # Simple string route-map / prefix-list references — recognised but not
+        # compiled. Surfaced as unsupported only when no structured filter was
+        # compiled for this direction.
+        _SIMPLE_FILTER_KEYS = {
             "routeMap", "inboundRouteMap", "outboundRouteMap",
             "route-map", "inbound-route-map", "outbound-route-map",
             "prefixList", "inboundPrefixList", "outboundPrefixList",
             "prefix-list", "inbound-prefix-list", "outbound-prefix-list",
             "distributionList", "distribution-list",
             "community", "communities", "communityList",
-            "importFilter", "exportFilter",
         }
-        filter_keys_present = sorted(k for k in peer.raw if k in _FILTER_KEYS)
-        if filter_keys_present:
+        simple_filter_keys_present = sorted(k for k in peer.raw if k in _SIMPLE_FILTER_KEYS)
+        if simple_filter_keys_present:
             result.unsupported.append(
-                f"vrf {vrf_name} BGP peer {peer.address} has route-map/filter fields "
-                f"({', '.join(filter_keys_present)}); route-map compilation not yet supported"
+                f"vrf {vrf_name} BGP peer {peer.address} has simple route-map/filter references "
+                f"({', '.join(simple_filter_keys_present)}); only structured importFilter/"
+                "exportFilter is compiled"
             )
 
         unsupported_keys = sorted(
@@ -504,7 +512,9 @@ class VyosTranslator:
                 "address_families",
                 "families",
                 "afiSafis",
-            } | _FILTER_KEYS
+                "ipv4", "ipv6",
+                "importFilter", "exportFilter",
+            } | _SIMPLE_FILTER_KEYS
         )
         if unsupported_keys:
             result.unsupported.append(
@@ -513,6 +523,131 @@ class VyosTranslator:
             )
 
         return result
+
+    def _compile_peer_filters(
+        self,
+        vrf_name: str,
+        peer: BgpPeer,
+        families: list[str],
+        peer_root: str,
+        result: TranslationResult,
+    ) -> bool:
+        """Compile importFilter/exportFilter into VyOS route-map + prefix-list + community-list.
+
+        Returns True if at least one filter was compiled.
+        """
+        compiled = False
+        sanitized_peer = _sanitize_name(peer.address or "unknown")
+
+        for family in families:
+            af_key = "ipv4" if "ipv4" in family else "ipv6" if "ipv6" in family else None
+            if af_key is None:
+                continue
+
+            import_filter = peer.ipv4_import_filter if af_key == "ipv4" else peer.ipv6_import_filter
+            export_filter = peer.ipv4_export_filter if af_key == "ipv4" else peer.ipv6_export_filter
+
+            for direction, bgp_filter in (("import", import_filter), ("export", export_filter)):
+                if bgp_filter is None:
+                    continue
+                map_name = f"hbr-{_sanitize_name(vrf_name)}-{sanitized_peer}-{af_key}-{direction}"
+                cmds = _compile_route_map(map_name, bgp_filter, af_key, result)
+                result.commands.extend(cmds)
+                result.commands.append(
+                    f"{peer_root} address-family {family} route-map {direction} '{map_name}'"
+                )
+                compiled = True
+
+        return compiled
+
+
+def _sanitize_name(name: str) -> str:
+    """Sanitize a name for use in VyOS policy object names (no colons, no spaces)."""
+    return re.sub(r"[^a-zA-Z0-9._-]", "-", name)
+
+
+def _compile_route_map(
+    map_name: str,
+    bgp_filter: BgpFilter,
+    af_key: str,
+    result: TranslationResult,
+) -> list[str]:
+    """Compile a BgpFilter into VyOS route-map + prefix-list + community-list commands."""
+    commands: list[str] = []
+    rule_num = 10
+
+    for item in bgp_filter.items:
+        action = "permit" if item.action.type == "accept" else "deny"
+        rm_rule = f"set policy route-map '{map_name}' rule '{rule_num}'"
+        commands.append(f"{rm_rule} action '{action}'")
+
+        if item.prefix and item.prefix.prefix:
+            pl_name = f"{map_name}-r{rule_num}"
+            pl_af = "prefix-list" if af_key == "ipv4" else "prefix-list6"
+            commands.extend(_compile_prefix_list(pl_name, pl_af, item.prefix, rule_num))
+            match_keyword = "ip address" if af_key == "ipv4" else "ipv6 address"
+            commands.append(f"{rm_rule} match {match_keyword} {pl_af} '{pl_name}'")
+
+        if item.community and item.community.community:
+            cl_name = f"{map_name}-cl-r{rule_num}"
+            commands.extend(_compile_community_list(cl_name, item.community))
+            if item.community.exact_match:
+                commands.append(f"{rm_rule} match community community-list '{cl_name}' exact-match")
+            else:
+                commands.append(f"{rm_rule} match community community-list '{cl_name}'")
+
+        commands.extend(_compile_route_modifications(rm_rule, item.action))
+        rule_num += 10
+
+    # Default action — last rule
+    default_action = "permit" if bgp_filter.default_action.type == "accept" else "deny"
+    default_rule = f"set policy route-map '{map_name}' rule '65535'"
+    commands.append(f"{default_rule} action '{default_action}'")
+    commands.extend(_compile_route_modifications(default_rule, bgp_filter.default_action))
+
+    return commands
+
+
+def _compile_prefix_list(
+    pl_name: str, pl_type: str, prefix_matcher: "BgpPrefixMatcher", rule_num: int
+) -> list[str]:
+    from .models import BgpPrefixMatcher  # avoid circular at module level
+
+    commands = [
+        f"set policy {pl_type} '{pl_name}' rule '10' prefix '{prefix_matcher.prefix}'",
+        f"set policy {pl_type} '{pl_name}' rule '10' action 'permit'",
+    ]
+    if prefix_matcher.ge is not None:
+        commands.append(f"set policy {pl_type} '{pl_name}' rule '10' ge '{prefix_matcher.ge}'")
+    if prefix_matcher.le is not None:
+        commands.append(f"set policy {pl_type} '{pl_name}' rule '10' le '{prefix_matcher.le}'")
+    return commands
+
+
+def _compile_community_list(cl_name: str, community_matcher: "BgpCommunityMatcher") -> list[str]:
+    from .models import BgpCommunityMatcher
+
+    return [
+        f"set policy community-list '{cl_name}' rule '10' regex '{community_matcher.community}'",
+        f"set policy community-list '{cl_name}' rule '10' action 'permit'",
+    ]
+
+
+def _compile_route_modifications(rule_prefix: str, action: "BgpFilterAction") -> list[str]:
+    from .models import BgpFilterAction
+
+    commands: list[str] = []
+    if action.remove_all_communities:
+        commands.append(f"{rule_prefix} set community 'none'")
+    elif action.remove_communities:
+        for community in action.remove_communities:
+            commands.append(f"{rule_prefix} set comm-list delete '{community}'")
+    if action.add_communities:
+        for community in action.add_communities:
+            commands.append(f"{rule_prefix} set community '{community}'")
+        if action.additive_communities:
+            commands.append(f"{rule_prefix} set community additive")
+    return commands
 
 
 def _iter_vrfs(document: NodeNetworkConfig) -> list[VrfSpec]:
