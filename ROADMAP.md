@@ -408,19 +408,31 @@ upstream API yet.
 
 ---
 
-### 7 — Leader election (medium / low priority)
+### ~~7 — Leader election~~ ✓
 
-Running multiple adapter instances against the same Kubernetes namespace and
-VyOS target produces conflicting applies. No leader-election or locking
-mechanism is implemented.
+Kubernetes Lease-based leader election using `coordination.k8s.io/v1` Lease API.
+
+- `KubeLeaseManager`: acquires/renews a Lease object per namespace; non-leaders
+  skip VyOS apply but still reconcile locally (plan mode)
+- `NoopLeaseManager`: always-leader default when `--enable-leader-election` is not set
+- CLI flags: `--enable-leader-election`, `--leader-id`, `--lease-namespace`,
+  `--lease-duration-seconds`
+- `run_controller()` checks `lease_manager.acquire()` before each cycle; on
+  loss of leadership, apply is suppressed but state tracking continues
 
 ---
 
-### 8 — Real informer loop (high / low priority)
+### ~~8 — Real informer loop~~ ✓
 
-The current Kubernetes source uses a manual list-then-watch loop with
-stale-watch recovery via relist. A shared-cache informer with event handlers
-would reduce API server load and improve change detection latency.
+`KubernetesDocumentSource` now uses a background watch thread (informer pattern):
+
+- Background `_watch_loop()` thread runs continuous list-then-watch with
+  exponential backoff (0.2s → 30s) and periodic full resync (default 30min)
+- Events pushed to a bounded `queue.Queue(maxsize=256)`; `wait_for_update()`
+  consumes from the queue, waking immediately when a change arrives
+- Thread-safe cache with `threading.Lock` around document/resourceVersion state
+- Automatic relist on watch errors (410/stale), full resync on queue overflow
+- `stop()` method for clean shutdown
 
 ---
 
