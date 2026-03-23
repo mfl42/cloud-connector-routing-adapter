@@ -322,14 +322,13 @@ describes the current behaviour, and states what is missing.
 
 ### Translation gaps — NodeNetworkConfig
 
-#### Policy route: direct next-hop action not emitted
+#### ~~Policy route: direct next-hop action not emitted~~ ✓
 
-`policyRoute.nextHop.address` is parsed and surfaced as a warning but generates
-no VyOS command. The adapter currently maps policy rules only to a target VRF
-or routing table (`set vrf` / `set table`). A direct next-hop action
-(`set nexthop`) is not yet emitted.
-
-Current behaviour: `nextHop.address` present → warning, no command.
+`policyRoute.nextHop.address` is now emitted as
+`set policy route '<name>' rule '<id>' set nexthop '<address>'`.
+Address takes priority over `vrf` and `table` targets.
+Address-family mismatch between the rule and the nexthop produces a warning
+and skips the nexthop command.
 
 #### ~~Policy route: only the first protocol is used~~ ✓
 
