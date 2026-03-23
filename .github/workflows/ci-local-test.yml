@@ -129,12 +129,20 @@ jobs:
         run: bash scripts/smoke-vyos-vm.sh apply
 
   # ── 4. VyOS image build (../vyos/ project) ───────────────────────────────
+  # ── 8. Trigger VyOS build matrix (nightly / main only) ───────────────────
   vyos-build:
-    name: VyOS build (VPP + container)
+    name: VyOS build matrix (trigger)
     runs-on: [self-hosted, venus]
     needs: check-examples
     if: github.ref == 'refs/heads/main'
     steps:
-      - name: Build VyOS image
-        working-directory: /home/runner/Projects/vyos
-        run: make container
+      - name: Trigger vyos-build-matrix workflow
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh workflow run vyos-build-matrix.yml \
+            --repo "${{ github.repository }}" \
+            --ref main \
+            --field run_vpp_tests=true \
+            --field flavors=generic,container,container-rootfs \
+            || echo "Workflow dispatch not available; skipping (nightly schedule will run it)"
