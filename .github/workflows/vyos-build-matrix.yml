@@ -1,0 +1,211 @@
+name: VyOS build matrix (VPP + container + version tracking)
+
+on:
+  schedule:
+    # Nightly at 02:00 UTC
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+    inputs:
+      flavors:
+        description: "Comma-separated flavors to build (generic,container,container-rootfs)"
+        required: false
+        default: "generic,container,container-rootfs"
+      run_vpp_tests:
+        description: "Run VPP smoke tests after generic build"
+        required: false
+        default: "true"
+      vyos_branch:
+        description: "VyOS branch/tag to build from"
+        required: false
+        default: ""
+
+env:
+  VYOS_PROJECT_DIR: /home/mfl42/Projects/vyos
+
+jobs:
+  # ── 0. Resolve build version ──────────────────────────────────────────────
+  version:
+    name: Resolve build version
+    runs-on: [self-hosted, venus]
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+      commit: ${{ steps.ver.outputs.commit }}
+      date: ${{ steps.ver.outputs.date }}
+
+    steps:
+      - name: Read VyOS version
+        id: ver
+        run: |
+          cd "${{ env.VYOS_PROJECT_DIR }}"
+          COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+          DATE=$(date -u +%Y%m%d)
+          # Try to read version from defaults.toml kernel_version or git tag
+          VYOS_VER=$(python3 -c "
+          import re, pathlib
+          text = pathlib.Path('data/defaults.toml').read_text()
+          m = re.search(r'kernel_version\s*=\s*\"([^\"]+)\"', text)
+          print(m.group(1) if m else 'dev')
+          " 2>/dev/null || echo "dev")
+          VERSION="${DATE}-${VYOS_VER}-${COMMIT}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "commit=$COMMIT"   >> "$GITHUB_OUTPUT"
+          echo "date=$DATE"       >> "$GITHUB_OUTPUT"
+          echo "Build version: $VERSION"
+
+  # ── 1. Build matrix ───────────────────────────────────────────────────────
+  build:
+    name: Build — ${{ matrix.flavor }}
+    runs-on: [self-hosted, venus]
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        flavor: [generic, container, container-rootfs]
+
+    steps:
+      - name: Check out vyos project
+        run: |
+          cd "${{ env.VYOS_PROJECT_DIR }}"
+          git fetch --tags
+          if [ -n "${{ github.event.inputs.vyos_branch }}" ]; then
+            git checkout "${{ github.event.inputs.vyos_branch }}"
+          fi
+          echo "Building from: $(git log -1 --oneline)"
+
+      - name: Build ${{ matrix.flavor }}
+        run: |
+          cd "${{ env.VYOS_PROJECT_DIR }}"
+          echo "=== Building flavor: ${{ matrix.flavor }} (version: ${{ needs.version.outputs.version }}) ==="
+          if [ -x ./container/build-on-venus.sh ] && [ "${{ matrix.flavor }}" != "generic" ]; then
+            ACTION=$([ "${{ matrix.flavor }}" = "container-rootfs" ] && echo "rootfs" || echo "iso")
+            ./container/build-on-venus.sh "$ACTION"
+          else
+            make "${{ matrix.flavor }}"
+          fi
+
+      - name: Collect artifacts
+        if: always()
+        run: |
+          cd "${{ env.VYOS_PROJECT_DIR }}"
+          VERSION="${{ needs.version.outputs.version }}"
+          FLAVOR="${{ matrix.flavor }}"
+          ARTIFACT_DIR="${{ env.VYOS_PROJECT_DIR }}/artifacts/${FLAVOR}"
+          mkdir -p "$ARTIFACT_DIR"
+
+          # ISO
+          if ls build/*.iso 2>/dev/null | head -1; then
+            cp build/*.iso "$ARTIFACT_DIR/vyos-${FLAVOR}-${VERSION}.iso" 2>/dev/null || true
+          fi
+          # OCI tarball (container-rootfs)
+          if ls build/*.tar 2>/dev/null | head -1; then
+            cp build/*.tar "$ARTIFACT_DIR/vyos-${FLAVOR}-${VERSION}.tar" 2>/dev/null || true
+          fi
+
+          # Version manifest
+          cat > "$ARTIFACT_DIR/build-manifest.json" << MANIFEST
+          {
+            "flavor": "${FLAVOR}",
+            "version": "${VERSION}",
+            "commit": "${{ needs.version.outputs.commit }}",
+            "date": "${{ needs.version.outputs.date }}",
+            "runner": "venus",
+            "built_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          MANIFEST
+
+          echo "Artifacts in $ARTIFACT_DIR:"
+          ls -lh "$ARTIFACT_DIR/"
+
+      - name: Upload build manifest
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vyos-${{ matrix.flavor }}-manifest
+          path: ${{ env.VYOS_PROJECT_DIR }}/artifacts/${{ matrix.flavor }}/build-manifest.json
+          if-no-files-found: warn
+
+  # ── 2. VPP smoke tests — 4 vCPU ──────────────────────────────────────────
+  test-vpp-4cpu:
+    name: VPP smoke — 4 vCPU
+    runs-on: [self-hosted, venus]
+    needs: [version, build]
+    if: >
+      (github.event.inputs.run_vpp_tests != 'false') &&
+      contains(fromJSON('["generic"]'), 'generic')
+
+    steps:
+      - name: Run VPP smoke test (4 vCPU)
+        run: |
+          cd "${{ env.VYOS_PROJECT_DIR }}"
+          echo "=== VPP smoke test — 4 vCPU ==="
+          make test-vpp CPU=4
+
+      - name: Capture test result
+        if: always()
+        run: |
+          cd "${{ env.VYOS_PROJECT_DIR }}"
+          mkdir -p artifacts/test-results
+          cat > artifacts/test-results/vpp-4cpu.json << EOF
+          {
+            "test": "vpp-smoke",
+            "cpu": 4,
+            "version": "${{ needs.version.outputs.version }}",
+            "result": "${{ job.status }}"
+          }
+          EOF
+
+  # ── 3. VPP smoke tests — 8 vCPU ──────────────────────────────────────────
+  test-vpp-8cpu:
+    name: VPP smoke — 8 vCPU
+    runs-on: [self-hosted, venus]
+    needs: [version, build]
+    if: github.event_name == 'schedule' || github.event.inputs.run_vpp_tests == 'true'
+
+    steps:
+      - name: Run VPP smoke test (8 vCPU)
+        run: |
+          cd "${{ env.VYOS_PROJECT_DIR }}"
+          echo "=== VPP smoke test — 8 vCPU ==="
+          make test-vpp CPU=8
+
+      - name: Capture test result
+        if: always()
+        run: |
+          cd "${{ env.VYOS_PROJECT_DIR }}"
+          mkdir -p artifacts/test-results
+          cat > artifacts/test-results/vpp-8cpu.json << EOF
+          {
+            "test": "vpp-smoke",
+            "cpu": 8,
+            "version": "${{ needs.version.outputs.version }}",
+            "result": "${{ job.status }}"
+          }
+          EOF
+
+  # ── 4. Version tracking summary ───────────────────────────────────────────
+  track:
+    name: Version tracking
+    runs-on: [self-hosted, venus]
+    needs: [version, build, test-vpp-4cpu, test-vpp-8cpu]
+    if: always()
+
+    steps:
+      - name: Write version tracking entry
+        run: |
+          VERSION="${{ needs.version.outputs.version }}"
+          DATE="${{ needs.version.outputs.date }}"
+          TRACKING_FILE="${{ env.VYOS_PROJECT_DIR }}/artifacts/build-history.jsonl"
+
+          cat >> "$TRACKING_FILE" << EOF
+          {"version":"${VERSION}","date":"${DATE}","build_generic":"${{ needs.build.result }}","test_vpp_4cpu":"${{ needs.test-vpp-4cpu.result }}","test_vpp_8cpu":"${{ needs.test-vpp-8cpu.result }}","triggered_by":"${{ github.event_name }}"}
+          EOF
+
+          echo "Version tracking updated:"
+          tail -5 "$TRACKING_FILE"
+
+      - name: Upload tracking log
+        uses: actions/upload-artifact@v4
+        with:
+          name: vyos-build-history
+          path: ${{ env.VYOS_PROJECT_DIR }}/artifacts/build-history.jsonl
+          if-no-files-found: ignore
