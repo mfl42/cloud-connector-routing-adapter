@@ -1,0 +1,85 @@
+{
+  "apiVersion": "network.t-caas.telekom.com/v1alpha1",
+  "kind": "NodeNetworkConfig",
+  "metadata": {
+    "name": "evpn-fabric-example",
+    "namespace": "default"
+  },
+  "spec": {
+    "revision": "evpn-v1",
+    "fabricVRFs": {
+      "fabric-a": {
+        "table": 1000,
+        "localASN": 65000,
+        "routerId": "10.255.0.1",
+        "vni": 5000,
+        "evpnExportRouteTargets": ["65000:5000"],
+        "evpnImportRouteTargets": ["65000:5000", "65000:5001"],
+        "evpnExportFilter": {
+          "defaultAction": { "type": "accept" },
+          "items": [
+            {
+              "action": {
+                "type": "accept",
+                "modifyRoute": {
+                  "addCommunities": ["65000:100"],
+                  "additiveCommunities": true
+                }
+              },
+              "matcher": {
+                "prefix": { "prefix": "10.0.0.0/8", "ge": 16 }
+              }
+            }
+          ]
+        },
+        "bgpPeers": [
+          {
+            "address": "10.255.0.2",
+            "remoteASN": 65001,
+            "addressFamilies": ["l2vpn-evpn", "ipv4-unicast"]
+          }
+        ],
+        "vrfImports": [
+          {
+            "fromVrf": "tenant-a",
+            "filter": {
+              "defaultAction": { "type": "accept" }
+            }
+          }
+        ],
+        "staticRoutes": [
+          {
+            "prefix": "10.1.0.0/16",
+            "nextHop": { "address": "10.255.0.254" }
+          }
+        ]
+      }
+    },
+    "localVRFs": {
+      "tenant-a": {
+        "table": 2000,
+        "localASN": 65000,
+        "interfaces": ["eth1"]
+      }
+    },
+    "layer2s": {
+      "l2-web": {
+        "vni": 10100,
+        "vlan": 100,
+        "mtu": 1500,
+        "routeTarget": "65000:10100",
+        "irb": {
+          "ipAddresses": ["10.0.100.1/24", "2001:db8:100::1/64"],
+          "macAddress": "00:11:22:33:44:55",
+          "vrf": "fabric-a"
+        }
+      },
+      "l2-db": {
+        "vni": 10200,
+        "vlan": 200,
+        "mtu": 9000,
+        "routeTarget": "65000:10200"
+      }
+    }
+  }
+}

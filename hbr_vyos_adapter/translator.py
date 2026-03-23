@@ -10,6 +10,7 @@ import re
 from .models import BgpFilter
 from .models import BgpFilterItem
 from .models import BgpPeer
+from .models import Layer2Spec
 from .models import NodeNetplanConfig
 from .models import NodeNetworkConfig
 from .models import PolicyRoute
@@ -56,11 +57,10 @@ class VyosTranslator:
 
         for vrf in _iter_vrfs(document):
             result.extend(self._translate_vrf(vrf))
+            result.extend(self._translate_evpn(vrf))
 
-        if document.layer2s:
-            result.unsupported.append(
-                "layer2s present: CRA/L2/VNI semantics are not mapped in this scaffold yet"
-            )
+        for l2 in document.layer2s.values():
+            result.extend(self._translate_layer2(l2))
 
         return result
 
@@ -149,6 +149,108 @@ class VyosTranslator:
 
         if vrf.bgp_peers:
             result.extend(self._translate_bgp(vrf))
+
+        return result
+
+    def _translate_layer2(self, l2: Layer2Spec) -> TranslationResult:
+        """Translate a Layer2 spec into VXLAN interface + bridge/IRB commands."""
+        result = TranslationResult()
+        if not l2.vni or not l2.vlan:
+            result.warnings.append(f"layer2 {l2.name}: missing vni or vlan; skipping")
+            return result
+
+        vxlan_name = f"vxlan{l2.vni}"
+        bridge_name = f"br{l2.vlan}"
+
+        # VXLAN interface
+        result.commands.append(f"set interfaces vxlan {vxlan_name} vni '{l2.vni}'")
+        if l2.mtu:
+            result.commands.append(f"set interfaces vxlan {vxlan_name} mtu '{l2.mtu}'")
+        result.commands.append(f"set interfaces vxlan {vxlan_name} parameters nolearning")
+
+        # Bridge domain with VXLAN member
+        result.commands.append(f"set interfaces bridge {bridge_name} member interface {vxlan_name}")
+
+        # IRB — IP addresses, MAC, VRF binding on the bridge
+        if l2.irb:
+            for addr in l2.irb.ip_addresses:
+                if _is_valid_ip_interface(addr):
+                    result.commands.append(f"set interfaces bridge {bridge_name} address '{addr}'")
+                else:
+                    result.warnings.append(f"layer2 {l2.name}: IRB address '{addr}' is invalid; skipping")
+            if l2.irb.mac_address:
+                result.commands.append(f"set interfaces bridge {bridge_name} mac '{l2.irb.mac_address}'")
+            if l2.irb.vrf:
+                result.commands.append(f"set interfaces bridge {bridge_name} vrf '{l2.irb.vrf}'")
+
+        # Mirror ACLs — surfaced as unsupported for now (GRE mirror is VyOS-version-dependent)
+        if l2.mirror_acls:
+            result.unsupported.append(
+                f"layer2 {l2.name}: {len(l2.mirror_acls)} mirrorAcl(s) present; "
+                "GRE traffic mirroring not yet mapped"
+            )
+
+        return result
+
+    def _translate_evpn(self, vrf: VrfSpec) -> TranslationResult:
+        """Translate EVPN fields on a fabric VRF into VyOS BGP EVPN commands."""
+        result = TranslationResult()
+        has_evpn = (
+            vrf.vni is not None
+            or vrf.evpn_export_route_targets
+            or vrf.evpn_import_route_targets
+            or vrf.evpn_export_filter is not None
+        )
+        if not has_evpn:
+            return result
+
+        if not vrf.bgp_system_as:
+            result.warnings.append(
+                f"vrf {vrf.name} has EVPN fields but no local ASN; skipping EVPN translation"
+            )
+            return result
+
+        bgp_root = f"set vrf name '{vrf.name}' protocols bgp"
+
+        # VNI-to-VRF binding
+        if vrf.vni is not None:
+            result.commands.append(f"set vrf name '{vrf.name}' vni '{vrf.vni}'")
+
+        # l2vpn-evpn address-family activation + advertise-all-vni
+        evpn_af = f"{bgp_root} address-family l2vpn-evpn"
+        result.commands.append(evpn_af)
+        result.commands.append(f"{evpn_af} advertise-all-vni")
+
+        # Route targets
+        for rt in vrf.evpn_export_route_targets:
+            result.commands.append(f"{evpn_af} route-target export '{rt}'")
+        for rt in vrf.evpn_import_route_targets:
+            result.commands.append(f"{evpn_af} route-target import '{rt}'")
+
+        # EVPN export filter → route-map compilation + binding
+        if vrf.evpn_export_filter:
+            map_name = f"hbr-{_sanitize_name(vrf.name)}-evpn-export"
+            # Reuse existing route-map compiler (same structure as BGP peer filters)
+            cmds = _compile_route_map(map_name, vrf.evpn_export_filter, "ipv4", result)
+            result.commands.extend(cmds)
+            result.commands.append(f"{evpn_af} route-map export '{map_name}'")
+
+        # VRF imports
+        for vrf_import in vrf.vrf_imports:
+            if not vrf_import.from_vrf:
+                result.warnings.append(f"vrf {vrf.name}: vrfImport with empty fromVrf; skipping")
+                continue
+            result.commands.append(
+                f"{bgp_root} address-family l2vpn-evpn import vrf '{vrf_import.from_vrf}'"
+            )
+            if vrf_import.filter:
+                import_map = f"hbr-{_sanitize_name(vrf.name)}-import-{_sanitize_name(vrf_import.from_vrf)}"
+                cmds = _compile_route_map(import_map, vrf_import.filter, "ipv4", result)
+                result.commands.extend(cmds)
+                result.commands.append(
+                    f"{bgp_root} address-family l2vpn-evpn import vrf '{vrf_import.from_vrf}' "
+                    f"route-map '{import_map}'"
+                )
 
         return result
 
@@ -742,6 +844,8 @@ def _normalize_bgp_address_family(family: str) -> str | None:
         return "ipv4-unicast"
     if token in {"ipv6", "ipv6-unicast", "v6", "inet6"}:
         return "ipv6-unicast"
+    if token in {"l2vpn-evpn", "evpn", "l2vpn"}:
+        return "l2vpn-evpn"
     return None
 
 
@@ -816,6 +920,14 @@ def _is_valid_interface_address(value: str) -> bool:
 def _is_valid_ip_literal(value: str) -> bool:
     try:
         ip_address(value)
+    except ValueError:
+        return False
+    return True
+
+
+def _is_valid_ip_interface(value: str) -> bool:
+    try:
+        ip_interface(value)
     except ValueError:
         return False
     return True

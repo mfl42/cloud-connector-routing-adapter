@@ -1347,6 +1347,130 @@ def scenario_bgp_filter_edge_cases() -> dict:
     }
 
 
+def scenario_evpn_vxlan_layer2() -> dict:
+    """EVPN fabric VRF + Layer2 VXLAN + IRB → full command set."""
+    scenario_dir = ARTIFACT_DIR / "evpn-vxlan-layer2"
+    reset_dir(scenario_dir)
+
+    document = load_document({
+        "apiVersion": "network.t-caas.telekom.com/v1alpha1",
+        "kind": "NodeNetworkConfig",
+        "metadata": {"name": "evpn-node"},
+        "spec": {
+            "revision": "evpn-test-1",
+            "fabricVRFs": {
+                "fabric": {
+                    "table": 1000,
+                    "localASN": 65000,
+                    "routerId": "10.255.0.1",
+                    "vni": 5000,
+                    "evpnExportRouteTargets": ["65000:5000"],
+                    "evpnImportRouteTargets": ["65000:5000", "65000:5001"],
+                    "evpnExportFilter": {
+                        "defaultAction": {"type": "accept"},
+                        "items": [
+                            {
+                                "action": {"type": "reject"},
+                                "matcher": {"prefix": {"prefix": "192.168.0.0/16"}},
+                            }
+                        ],
+                    },
+                    "bgpPeers": [
+                        {
+                            "address": "10.255.0.2",
+                            "remoteASN": 65001,
+                            "addressFamilies": ["l2vpn-evpn"],
+                        }
+                    ],
+                    "vrfImports": [
+                        {
+                            "fromVrf": "tenant",
+                            "filter": {"defaultAction": {"type": "accept"}},
+                        }
+                    ],
+                }
+            },
+            "layer2s": {
+                "web": {
+                    "vni": 10100,
+                    "vlan": 100,
+                    "mtu": 1500,
+                    "routeTarget": "65000:10100",
+                    "irb": {
+                        "ipAddresses": ["10.0.100.1/24", "2001:db8:100::1/64"],
+                        "macAddress": "00:11:22:33:44:55",
+                        "vrf": "fabric",
+                    },
+                },
+                "db": {
+                    "vni": 10200,
+                    "vlan": 200,
+                    "mtu": 9000,
+                    "routeTarget": "65000:10200",
+                },
+            },
+        },
+    })
+
+    result = VyosTranslator().translate(document)
+    write_json(scenario_dir / "translation.json", {
+        "commands": result.commands,
+        "warnings": result.warnings,
+        "unsupported": result.unsupported,
+    })
+
+    # --- EVPN VRF-level assertions ---
+    assert "set vrf name 'fabric' vni '5000'" in result.commands
+    assert "set vrf name 'fabric' protocols bgp address-family l2vpn-evpn" in result.commands
+    assert "set vrf name 'fabric' protocols bgp address-family l2vpn-evpn advertise-all-vni" in result.commands
+    assert any("route-target export '65000:5000'" in c for c in result.commands)
+    assert any("route-target import '65000:5000'" in c for c in result.commands)
+    assert any("route-target import '65000:5001'" in c for c in result.commands)
+
+    # EVPN export filter compiled
+    assert any("route-map 'hbr-fabric-evpn-export'" in c for c in result.commands)
+    assert any("route-map export 'hbr-fabric-evpn-export'" in c for c in result.commands)
+
+    # VRF import
+    assert any("import vrf 'tenant'" in c for c in result.commands)
+    assert any("route-map 'hbr-fabric-import-tenant'" in c for c in result.commands)
+
+    # l2vpn-evpn address family on BGP peer
+    assert any("neighbor '10.255.0.2' address-family l2vpn-evpn" in c for c in result.commands)
+
+    # --- Layer2 VXLAN assertions ---
+    # Web domain (with IRB)
+    assert "set interfaces vxlan vxlan10100 vni '10100'" in result.commands
+    assert "set interfaces vxlan vxlan10100 mtu '1500'" in result.commands
+    assert "set interfaces vxlan vxlan10100 parameters nolearning" in result.commands
+    assert "set interfaces bridge br100 member interface vxlan10100" in result.commands
+    assert "set interfaces bridge br100 address '10.0.100.1/24'" in result.commands
+    assert "set interfaces bridge br100 address '2001:db8:100::1/64'" in result.commands
+    assert "set interfaces bridge br100 mac '00:11:22:33:44:55'" in result.commands
+    assert "set interfaces bridge br100 vrf 'fabric'" in result.commands
+
+    # DB domain (no IRB)
+    assert "set interfaces vxlan vxlan10200 vni '10200'" in result.commands
+    assert "set interfaces vxlan vxlan10200 mtu '9000'" in result.commands
+    assert "set interfaces bridge br200 member interface vxlan10200" in result.commands
+    # No address/mac/vrf for db (no IRB)
+    assert not any("br200" in c and "address" in c for c in result.commands)
+    assert not any("br200" in c and "vrf" in c for c in result.commands)
+
+    # No unsupported for layer2s (was previously "not mapped")
+    assert not any("CRA/L2/VNI" in u for u in result.unsupported)
+
+    return {
+        "scenario": "evpn-vxlan-layer2",
+        "commandCount": len(result.commands),
+        "warningCount": len(result.warnings),
+        "unsupportedCount": len(result.unsupported),
+        "evpnCommands": sum(1 for c in result.commands if "l2vpn-evpn" in c or "vni" in c.lower()),
+        "vxlanCommands": sum(1 for c in result.commands if "vxlan" in c),
+        "bridgeCommands": sum(1 for c in result.commands if "bridge" in c),
+    }
+
+
 def main() -> int:
     ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
     summaries = [
@@ -1365,6 +1489,7 @@ def main() -> int:
         scenario_bgp_route_map_compilation(),
         scenario_leader_election_boundaries(),
         scenario_bgp_filter_edge_cases(),
+        scenario_evpn_vxlan_layer2(),
     ]
     summary = {
         "scenarioCount": len(summaries),
