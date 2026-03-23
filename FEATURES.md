@@ -77,8 +77,18 @@ la delegue a un routeur externe — c'est ce que fait cet adaptateur.
 
 ### Qu'est-ce que VyOS ?
 
-VyOS est un systeme d'exploitation reseau open source base sur Linux. Il
-fournit les fonctions d'un routeur professionnel :
+VyOS est un systeme d'exploitation reseau open source base sur Linux,
+issu du fork communautaire de **Vyatta** (2013). Vyatta etait un OS
+routeur commercial base sur Debian, rachete par Brocade puis absorbe
+par AT&T. Quand Brocade a ferme le code source, la communaute a forke
+le projet sous le nom VyOS pour maintenir une alternative libre.
+
+VyOS herite de l'architecture Vyatta — CLI transactionnel
+(`set`/`delete`/`commit`), configuration hierarchique, et plan de
+routage FRRouting (anciennement Quagga) — tout en ajoutant des
+fonctions modernes (API REST, conteneurisation, EVPN/VXLAN, WireGuard).
+
+Il fournit les fonctions d'un routeur professionnel :
 
 - **Routage** : BGP, OSPF, IS-IS, routes statiques, policy routing, VRF
 - **VXLAN/EVPN** : tunnels overlay L2, fabric EVPN avec route targets
