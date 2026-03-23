@@ -10,7 +10,7 @@ class CustomResourceSpec:
     plural: str
 
 
-SUPPORTED_CUSTOM_RESOURCES: tuple[CustomResourceSpec, ...] = (
+SUPPORTED_CUSTOM_RESOURCES: list[CustomResourceSpec] = [
     CustomResourceSpec(
         api_version="network.t-caas.telekom.com/v1alpha1",
         kind="NodeNetworkConfig",
@@ -21,7 +21,22 @@ SUPPORTED_CUSTOM_RESOURCES: tuple[CustomResourceSpec, ...] = (
         kind="NodeNetplanConfig",
         plural="nodenetplanconfigs",
     ),
-)
+]
+
+
+def register_resource(spec: CustomResourceSpec) -> None:
+    """Register an additional CRD kind at runtime.
+
+    Call this before the first ``list_documents`` or ``watch_for_change``
+    invocation to add a new kind to the adapter without modifying this file.
+    Registering a kind that is already present (same ``kind`` field) replaces
+    the existing entry.
+    """
+    for i, existing in enumerate(SUPPORTED_CUSTOM_RESOURCES):
+        if existing.kind == spec.kind:
+            SUPPORTED_CUSTOM_RESOURCES[i] = spec
+            return
+    SUPPORTED_CUSTOM_RESOURCES.append(spec)
 
 
 def resolve_resources(resource_kinds: list[str] | None) -> list[CustomResourceSpec]:

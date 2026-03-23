@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import os
 import sys
 import time
 from dataclasses import asdict
@@ -14,8 +16,10 @@ from .models import NodeNetplanConfig
 from .models import NodeNetworkConfig
 from .reconcile import _document_key
 from .reconcile import reconcile_documents
+from .reconcile import teardown_documents
 from .state import ReconcileState
 from .status import build_status_report
+from .status import write_status_report
 from .translator import VyosTranslator
 from .vyos_api import VyosApiClient
 
@@ -78,10 +82,12 @@ class FileDocumentSource(DocumentSource):
     file: str
     name: str = "file"
     _documents_by_key: dict[str, NodeNetworkConfig | NodeNetplanConfig] = field(default_factory=dict)
+    _last_mtime: float = field(default=0.0)
 
     def initial_update(self) -> SourceUpdate:
         documents = load_documents(self.file)
         self._documents_by_key = {_document_key(document): document for document in documents}
+        self._last_mtime = _file_mtime(self.file)
         return SourceUpdate(
             documents=documents,
             changed_keys=set(self._documents_by_key),
@@ -90,6 +96,10 @@ class FileDocumentSource(DocumentSource):
 
     def wait_for_update(self, timeout_seconds: float) -> SourceUpdate | None:
         time.sleep(timeout_seconds)
+        current_mtime = _file_mtime(self.file)
+        if current_mtime == self._last_mtime:
+            return None
+        self._last_mtime = current_mtime
         documents = load_documents(self.file)
         next_documents = {_document_key(document): document for document in documents}
         removed = set(self._documents_by_key) - set(next_documents)
@@ -97,7 +107,7 @@ class FileDocumentSource(DocumentSource):
             key
             for key, document in next_documents.items()
             if key not in self._documents_by_key
-            or self._documents_by_key[key].raw != document.raw
+            or _raw_changed(self._documents_by_key[key].raw, document.raw)
         }
         self._documents_by_key = next_documents
         if not changed and not removed:
@@ -213,7 +223,7 @@ class KubernetesDocumentSource(DocumentSource):
         previous = self._documents_by_key.get(event.key)
         self._documents_by_key[event.key] = event.document
         kind_keys.add(event.key)
-        if previous is None or previous.raw != event.document.raw:
+        if previous is None or _raw_changed(previous.raw, event.document.raw):
             changed_keys.add(event.key)
             changed_documents[event.key] = event.document
 
@@ -240,6 +250,7 @@ def run_controller(
         raise ValueError("write_status=True requires a KubeStatusWriter")
 
     result = ControllerRunResult(once=once, interval_seconds=interval_seconds, source=source.name)
+    translator = VyosTranslator()
     pending_update = source.initial_update()
     iteration = 0
     while True:
@@ -255,9 +266,20 @@ def run_controller(
                 )
             deleted_keys = state.mark_deleted(removed_keys)
 
+            if deleted_keys and apply:
+                try:
+                    teardown_documents(
+                        deleted_keys,
+                        state,
+                        state_file,
+                        client=vyos_client,
+                    )
+                except Exception as exc:
+                    print(f"teardown failed for keys {sorted(deleted_keys)}: {exc}", file=sys.stderr)
+
             reconcile_result = reconcile_documents(
                 pending_update.documents,
-                VyosTranslator(),
+                translator,
                 state,
                 state_file,
                 apply=apply,
@@ -279,8 +301,6 @@ def run_controller(
                 state.save(state_file)
                 reconcile_result.status_report = build_status_report(state).to_dict()
                 if status_file:
-                    from .status import write_status_report
-
                     write_status_report(state, status_file)
 
             result.iterations.append(
@@ -329,6 +349,17 @@ def run_controller(
             except Exception as exc:  # pragma: no cover - exercised via CLI smoke paths
                 print(f"controller wait failed after iteration {iteration}: {exc}", file=sys.stderr)
                 time.sleep(interval_seconds)
+
+
+def _raw_changed(a: dict, b: dict) -> bool:
+    return json.dumps(a, sort_keys=True) != json.dumps(b, sort_keys=True)
+
+
+def _file_mtime(path: str) -> float:
+    try:
+        return os.stat(path).st_mtime
+    except OSError:
+        return 0.0
 
 
 def _build_kind_index(

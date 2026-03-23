@@ -32,6 +32,7 @@ class DocumentState:
     deleted_at: str | None = None
     last_seen_at: str | None = None
     last_applied_at: str | None = None
+    applied_commands: list[str] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, data: dict) -> "DocumentState":
@@ -56,6 +57,7 @@ class DocumentState:
             deleted_at=data.get("deleted_at"),
             last_seen_at=data.get("last_seen_at"),
             last_applied_at=data.get("last_applied_at"),
+            applied_commands=list(data.get("applied_commands") or []),
         )
 
     def to_dict(self) -> dict:
@@ -76,7 +78,10 @@ class ReconcileState:
         if not content:
             return cls()
 
-        raw = json.loads(content)
+        try:
+            raw = json.loads(content)
+        except json.JSONDecodeError:
+            return cls()
         documents = {
             key: DocumentState.from_dict(value)
             for key, value in (raw.get("documents") or {}).items()
@@ -86,8 +91,7 @@ class ReconcileState:
 
     def save(self, path: str | Path) -> None:
         state_path = Path(path)
-        if state_path.parent != Path("."):
-            state_path.parent.mkdir(parents=True, exist_ok=True)
+        state_path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "documents": {
                 key: value.to_dict()
@@ -142,7 +146,10 @@ class ReconcileState:
 def _int_or_none(value) -> int | None:
     if value in (None, ""):
         return None
-    return int(value)
+    try:
+        return int(value)
+    except (ValueError, TypeError):
+        return None
 
 
 def _utc_now() -> str:
