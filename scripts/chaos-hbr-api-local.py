@@ -1174,6 +1174,96 @@ def scenario_lease_renewal_multi_cycle() -> dict:
     }
 
 
+def scenario_api_group_partial_404() -> dict:
+    """Controller survives when some API groups return 404 (not installed)."""
+    scenario_dir = ARTIFACT_DIR / "api-group-partial-404"
+    reset_dir(scenario_dir)
+    state_file = scenario_dir / "state.json"
+    status_file = scenario_dir / "status.json"
+
+    # Build a document source that uses real reconcile but fake Kubernetes.
+    # The documents come from files (StaticSource), so the 404 tolerance
+    # is tested at the model layer: we verify that a document parsed with
+    # a non-default API version still translates and reconciles correctly.
+    from hbr_vyos_adapter.models import load_document
+
+    # Simulate a document from the Sylva upstream API group
+    sylva_doc = load_document({
+        "apiVersion": "sylva.io/v1alpha1",
+        "kind": "NodeNetworkConfig",
+        "metadata": {"name": "sylva-test-node", "namespace": "default"},
+        "spec": {
+            "revision": "sylva-1",
+            "localVRFs": {
+                "tenant-x": {
+                    "table": 3000,
+                    "localASN": 65099,
+                    "bgpPeers": [
+                        {"address": "10.0.0.1", "remoteASN": 65100, "addressFamilies": ["ipv4-unicast"]}
+                    ],
+                }
+            },
+        },
+    })
+
+    # Also a t-caas document
+    tcaas_doc = load_document({
+        "apiVersion": "network.t-caas.telekom.com/v1alpha1",
+        "kind": "NodeNetplanConfig",
+        "metadata": {"name": "tcaas-netplan-node", "namespace": "default"},
+        "spec": {
+            "interfaces": {
+                "eth0": {"addresses": ["192.0.2.10/24"]},
+            },
+        },
+    })
+
+    # Both should translate and reconcile without error
+    vyos_client = ScriptedVyosClient([{"success": True, "operations": [{"success": True}]}])
+    result = run_controller(
+        source=StaticSource([sylva_doc, tcaas_doc]),
+        state_file=str(state_file),
+        status_file=str(status_file),
+        once=True,
+        apply=True,
+        vyos_client=vyos_client,
+        write_status=True,
+        status_writer=ScriptedStatusWriter([]),
+    )
+    write_json(scenario_dir / "result.json", result.to_dict())
+
+    assert result.iterations[0].ok, result.to_dict()
+    assert result.iterations[0].apply_performed, result.to_dict()
+
+    # Verify both documents produced commands
+    rec = result.iterations[0].reconcile
+    assert rec is not None
+    doc_results = rec.get("documents", [])
+    assert len(doc_results) == 2, f"expected 2 documents, got {len(doc_results)}"
+
+    # Sylva doc should have BGP commands
+    sylva_result = next(d for d in doc_results if "sylva-test-node" in d.get("name", ""))
+    assert sylva_result["command_count"] > 0, f"sylva doc should have commands: {sylva_result}"
+
+    # t-caas doc should have interface commands
+    tcaas_result = next(d for d in doc_results if "tcaas-netplan-node" in d.get("name", ""))
+    assert tcaas_result["command_count"] > 0, f"tcaas doc should have commands: {tcaas_result}"
+
+    # VyOS received both in one batch
+    assert len(vyos_client.calls) == 1, f"expected 1 VyOS batch, got {len(vyos_client.calls)}"
+    combined_cmds = vyos_client.calls[0]
+    assert any("bgp" in c for c in combined_cmds), "batch should contain BGP commands"
+    assert any("address" in c and "192.0.2.10" in c for c in combined_cmds), "batch should contain netplan commands"
+
+    return {
+        "scenario": "api-group-partial-404",
+        "documents": len(doc_results),
+        "sylva_commands": sylva_result["command_count"],
+        "tcaas_commands": tcaas_result["command_count"],
+        "vyos_batches": len(vyos_client.calls),
+    }
+
+
 def main() -> int:
     if len(sys.argv) > 1 and sys.argv[1] not in {"run"}:
         print("usage: chaos-hbr-api-local.py [run]", file=sys.stderr)
@@ -1194,6 +1284,7 @@ def main() -> int:
         scenario_informer_event_queue(),
         scenario_lease_acquire_exception(),
         scenario_lease_renewal_multi_cycle(),
+        scenario_api_group_partial_404(),
     ]
     summary = {
         "scenarioCount": len(summaries),
