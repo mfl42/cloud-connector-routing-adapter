@@ -1,0 +1,70 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: github-runner
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: runner-token
+  namespace: github-runner
+type: Opaque
+stringData:
+  # Replace with a fresh token: gh api repos/mfl42/cloud-connector-routing-adapter/actions/runners/registration-token --method POST --jq '.token'
+  RUNNER_TOKEN: "REPLACE_ME"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hbr-runner
+  namespace: github-runner
+  labels:
+    app: hbr-runner
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: hbr-runner
+  template:
+    metadata:
+      labels:
+        app: hbr-runner
+    spec:
+      hostNetwork: true   # needed to reach VyOS VM at 192.0.2.230
+      dnsPolicy: ClusterFirstWithHostNet
+      restartPolicy: Always
+      containers:
+        - name: runner
+          image: ghcr.io/actions/actions-runner:latest
+          env:
+            - name: REPO_URL
+              value: "https://github.com/mfl42/cloud-connector-routing-adapter"
+            - name: RUNNER_NAME
+              value: "venus-ms01"
+            - name: RUNNER_LABELS
+              value: "self-hosted,linux,x64,venus"
+            - name: RUNNER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: runner-token
+                  key: RUNNER_TOKEN
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+            limits:
+              cpu: "2"
+              memory: "2Gi"
+          volumeMounts:
+            - name: work
+              mountPath: /home/runner/_work
+            - name: projects
+              mountPath: /home/runner/Projects
+              readOnly: false
+      volumes:
+        - name: work
+          emptyDir: {}
+        - name: projects
+          hostPath:
+            path: /home/mfl42/Projects
+            type: Directory
