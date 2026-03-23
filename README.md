@@ -51,7 +51,10 @@ for a full description in plain language.
 Remaining unsupported:
 - simple string route-map references (`routeMap`, `prefixList`)
 - `mirrorAcls` GRE traffic mirroring
-- full CRA rollout orchestration
+- VTEP source-address (not in CRD; VyOS uses loopback)
+- per-interface readiness in status conditions
+
+See [ROADMAP.md](ROADMAP.md) for the full list of limitations and next steps.
 
 ## Documentation
 

@@ -206,7 +206,7 @@ au lieu d'un seul namespace. Configurable via `--cluster-scoped-source` et
 
 Trois suites de tests locaux valident chaque feature sans cluster ni routeur :
 
-### Boundary (16 scenarios)
+### Boundary (17 scenarios)
 
 Tests deterministes de cas limites :
 - interfaces (types inconnus, VLAN, loopback)
@@ -225,6 +225,7 @@ Tests deterministes de cas limites :
 - election de leader (expiration, parsing, NoopLeaseManager)
 - edge cases filtres BGP (action "next", matchers vides, ge>le, conflits)
 - EVPN + VXLAN + layer2 + IRB (fabric VRF complet)
+- auto-decouverte API (variants, tolerance 404, URLs t-caas vs sylva.io)
 
 ---
 
@@ -247,7 +248,44 @@ Limitations :
 - un nouveau groupe API upstream necessite l'ajout d'une ligne dans le code
 - les CRDs locaux (`k8s/crds/`) sont fixes sur `network.t-caas.telekom.com`
 
-### Chaos (12 scenarios)
+---
+
+## Limitations connues
+
+### Traduction
+
+- **mirrorAcls** — le mirroring de trafic par encapsulation GRE (champ
+  `layer2s.<name>.mirrorAcls`) est detecte mais pas traduit. Le support
+  depend de la version VyOS et n'est pas encore mappe.
+- **References route-map par nom** — les champs `routeMap`, `prefixList`,
+  `distributionList` sur les peers BGP sont reconnus mais pas compiles en
+  objets VyOS. Seuls les filtres structures `importFilter`/`exportFilter`
+  sont compiles. Les references par nom restent marquees non supportees.
+- **VTEP source-address** — l'IP source du tunnel VXLAN n'est pas dans le
+  CRD upstream. VyOS utilise le loopback ou la route par defaut. Pour un
+  controle explicite en fabric EVPN multi-noeud, un parametre CLI
+  `--vtep-source-address` pourrait etre ajoute.
+- **Route Distinguisher** — absent du CRD. VyOS auto-genere le RD. Pas de
+  surcharge possible via l'adaptateur.
+- **Readiness par interface** — les conditions de statut CRA rapportent la
+  sante au niveau document (Available, Reconciling, Degraded) mais pas par
+  interface. Correler la config desiree avec l'etat operationnel VyOS
+  necessite de lire l'API VyOS, qui n'a pas de contrat stable upstream.
+- **Validation schema CRD** — l'adaptateur ne valide pas le schema des CRDs.
+  Il parse ce qu'il comprend et marque le reste comme warning ou unsupported.
+
+### Prochaines etapes possibles
+
+1. **Tests live sur le lab VyOS** — valider les commandes generees sur le
+   routeur reel (192.0.2.230), notamment EVPN/VXLAN
+2. **CI/CD GitHub Actions** — automatiser les 3 suites de tests sur chaque PR
+3. **Suivi API upstream Sylva** — surveiller le renommage du groupe API lors
+   de la fusion dans sylva-core
+4. **Packaging container + Helm** — image Docker et chart Helm pour deploiement
+   Kubernetes (prerequis pour l'election de leader en production)
+5. **Metriques Prometheus** — compteurs de commandes, erreurs, latence reconcile
+
+### Chaos (13 scenarios)
 
 Injection de fautes simulant des pannes reelles :
 - timeout VyOS puis recovery
@@ -262,6 +300,7 @@ Injection de fautes simulant des pannes reelles :
 - event queue informer (2 iterations, changement detecte)
 - exception pendant acquisition du lease
 - renouvellement lease multi-cycle (leader, leader, non-leader)
+- documents multi-API-group (sylva.io + t-caas dans un seul batch)
 
 ### Fuzz (120 iterations, ~6300 commandes)
 

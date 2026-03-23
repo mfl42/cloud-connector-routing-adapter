@@ -12,7 +12,7 @@ controller, reconcile, state, and status code with scripted failures:
 python3 scripts/chaos-hbr-api-local.py run
 ```
 
-## Scenarios (12)
+## Scenarios (13)
 
 1. **vyos-timeout-recovery** — VyOS API timeout, then clean recovery on retry
 2. **status-writer-failure-recovery** — Kubernetes 409 conflict on status write,
@@ -37,6 +37,8 @@ python3 scripts/chaos-hbr-api-local.py run
     throws RuntimeError
 12. **lease-renewal-multi-cycle** — 3 iterations: leader, leader, non-leader;
     acquire() called 3 times
+13. **api-group-partial-404** — mixed documents from sylva.io and t-caas API
+    groups translated and reconciled in a single VyOS batch
 
 Artifacts are written under:
 
