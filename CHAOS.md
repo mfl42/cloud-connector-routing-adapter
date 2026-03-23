@@ -12,15 +12,31 @@ controller, reconcile, state, and status code with scripted failures:
 python3 scripts/chaos-hbr-api-local.py run
 ```
 
-It currently covers:
+## Scenarios (12)
 
-- VyOS apply timeout followed by clean recovery on rerun
-- Kubernetes status write failure after a successful apply, followed by clean
-  status convergence on rerun
-- watch-loop chaos with one wait failure, document churn, deletion, and
-  immediate tombstone pruning
-- Kubernetes status patch retry behavior under transport failure and `503`
-  responses
+1. **vyos-timeout-recovery** — VyOS API timeout, then clean recovery on retry
+2. **status-writer-failure-recovery** — Kubernetes 409 conflict on status write,
+   apply state preserved, convergence on retry
+3. **watch-churn-and-prune** — watch failure, document update, two deletions with
+   immediate tombstone pruning (retention=0)
+4. **k8s-patch-retry** — transport loss then 503 on HTTP PATCH, retry with
+   backoff, final success
+5. **commit-failure-rollback** — VyOS commit returns success=false, discard_pending
+   called, state not advanced, retry succeeds
+6. **cluster-scoped-patch-url** — KubeStatusWriter._patch_plan URL omits
+   /namespaces/ when cluster_scoped=True
+7. **cluster-scoped-status-wiring** — cluster_scoped_status=True forwarded to
+   status writer on apply and noop iterations
+8. **route-map-apply-failure-and-retry** — BGP filter commands in failed batch,
+   discard, retry with route-map present, noop after success
+9. **leader-election-skip-apply** — non-leader makes zero VyOS calls, leader
+   applies normally
+10. **informer-event-queue** — 2 iterations via scripted source push, both
+    applied, route change detected in second iteration
+11. **lease-acquire-exception** — controller survives when lease_manager.acquire()
+    throws RuntimeError
+12. **lease-renewal-multi-cycle** — 3 iterations: leader, leader, non-leader;
+    acquire() called 3 times
 
 Artifacts are written under:
 

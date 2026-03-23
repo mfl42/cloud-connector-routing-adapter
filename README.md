@@ -22,42 +22,41 @@ the target NOS. Instead, this scaffold provides an independent adapter that can:
 
 ## Status
 
-This is an initial scaffold focused on a safe subset:
+All planned ROADMAP items (1-9) are implemented. See [FEATURES.md](FEATURES.md)
+for a full description in plain language.
 
 - `NodeNetworkConfig`
-  - VRF table creation
-  - interface-to-VRF attachment
-  - policy-route generation
-  - static route generation
-  - basic BGP neighbor generation
+  - VRF table creation, interface-to-VRF attachment (including VLAN sub-interfaces)
+  - static route generation (IPv4/IPv6, next-hop address or interface)
+  - policy-route generation (multi-protocol, ports, nexthop/vrf/table actions)
+  - full BGP neighbor configuration (ASN, timers, password, bfd, graceful-restart)
+  - BGP import/export filter compilation (route-map, prefix-list, community-list)
+  - Layer2/VXLAN domains (vni, bridge, IRB with IP/MAC/VRF)
+  - EVPN on fabric VRFs (l2vpn-evpn, route targets, advertise-all-vni, VRF imports)
 - `NodeNetplanConfig`
-  - interface addresses
-  - default routes
+  - interface addresses, DHCP v4/v6, MTU
+  - static routes with metric, default routes
   - name-server configuration
+  - dual-format: legacy `spec.interfaces` and netplan native `spec.desiredState`
 - reconcile/status layer
-  - local desired versus applied revision tracking
-  - digest-based fallback revision tracking for documents without a native revision field
-  - CRD-style JSON status export for future controller writeback
-- Kubernetes integration hardening
-  - bounded retry/backoff on transient status patch failures
-  - stale `resourceVersion` watch recovery via relist
-  - selective reprocessing of only the CRD objects that changed
-  - local tombstones for deleted documents with timed pruning
-  - skip status writeback for deleted objects that no longer exist in Kubernetes
-  - `observedGeneration` and `metadata.resourceVersion` in status patches when available
-  - kubeconfig authentication via bearer token or client certificate/key material
+  - digest-based change detection, diff-based partial delete, full teardown
+  - rollback on apply failure (discard pending VyOS state)
+  - CRA status conditions: Available, Reconciling, Degraded, InSync, etc.
+- controller infrastructure
+  - background informer watch thread with event queue and exponential backoff
+  - Lease-based leader election for multi-instance coordination
+  - cluster-scoped and namespace-scoped CRD watch
+  - Kubernetes status subresource patching with retry/backoff
 
-The following are intentionally left as future work and are surfaced as
-warnings/unsupported items when encountered:
-
-- full CRA status contract
-- L2/VNI semantics
-- full FRR/BGP parity with the HBR CRA data model
-- full netplan parity
-- real Kubernetes watch/informer loop beyond file polling
+Remaining unsupported:
+- simple string route-map references (`routeMap`, `prefixList`)
+- `mirrorAcls` GRE traffic mirroring
+- full CRA rollout orchestration
 
 ## Documentation
 
+- [FEATURES.md](FEATURES.md)
+  - description complete des fonctionnalites en langage simple
 - [STABLE.md](STABLE.md)
   - consolidated usage, test, stability, and live validation guide for the current adapter
 - [VALIDATION.md](VALIDATION.md)

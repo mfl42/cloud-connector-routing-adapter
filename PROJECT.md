@@ -106,43 +106,45 @@ The current scaffold is organized as:
 
 ### `NodeNetworkConfig`
 
-- VRF table creation
-- interface-to-VRF attachment
-- IPv4 and IPv6 static routes inside a specific routing table
-- policy-route generation using:
-  - interface
-  - source prefixes
-  - destination prefixes
-  - source port
-  - destination port
-  - protocol
-  - target VRF or target table
-- basic VRF-scoped BGP neighbor generation using:
-  - VRF local ASN/system-as
-  - neighbor address
-  - remote ASN
-  - address-family activation
-  - update-source
-  - eBGP multihop
+- VRF table creation, interface-to-VRF attachment (including VLAN sub-interfaces)
+- IPv4 and IPv6 static routes (next-hop address or interface)
+- policy-route generation (multi-protocol, ports, nexthop/vrf/table actions)
+- full BGP neighbor configuration:
+  - ASN, router-id, update-source, eBGP multihop, password
+  - timers (keepalive/holdtime), BFD, graceful-restart
+  - address families: ipv4-unicast, ipv6-unicast, l2vpn-evpn
+- BGP import/export filter compilation:
+  - route-map, prefix-list/prefix-list6, community-list
+  - prefix matchers with ge/le, community matchers with exact-match
+  - route modifications (add/remove communities)
+- Layer2/VXLAN domains:
+  - VXLAN interface (vni, mtu, nolearning), bridge domain, IRB
+- EVPN on fabric VRFs:
+  - VNI-to-VRF binding, l2vpn-evpn address-family, advertise-all-vni
+  - route targets, EVPN export filter, VRF imports
 
 ### `NodeNetplanConfig`
 
-- interface IPv4/IPv6 addresses
-- default routes
-- ordinary static routes
+- interface IPv4/IPv6 addresses, DHCP v4/v6, MTU
+- default routes, static routes with metric
 - DNS name-server entries
+- dual-format: legacy `spec.interfaces` and netplan native `spec.desiredState`
+
+### Controller Infrastructure
+
+- background informer watch thread with event queue and exponential backoff
+- Lease-based leader election (coordination.k8s.io/v1)
+- rollback on apply failure (discard pending VyOS state)
+- CRA status conditions (Available, Reconciling, Degraded, etc.)
 
 ## Unsupported or Partial Areas
 
-The scaffold currently surfaces these explicitly instead of trying to fake full
-support:
+The following are surfaced explicitly instead of being silently dropped:
 
-- `layer2s`
-- CRA-specific L2/VNI behavior
-- advanced FRR/BGP parity beyond the basic neighbor subset
-- host readiness / rollout / reconciliation status
-- full `NodeNetplanConfig` parity
-- commit rollback and transactional diff logic
+- simple string route-map references (`routeMap`, `prefixList`)
+- `mirrorAcls` GRE traffic mirroring
+- full CRA rollout orchestration
+- per-interface readiness
 
 ## Design Choice: External Adapter
 

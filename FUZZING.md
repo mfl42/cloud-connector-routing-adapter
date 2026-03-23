@@ -24,15 +24,20 @@ The current harness mutates both:
 It randomizes combinations of:
 
 - revisions
-- VRF tables
-- interface attachments
-- static routes
-- policy routes
-- BGP peers and address families
-- netplan addresses and routes
-- nameserver sets
-- optional unsupported-but-well-formed fields such as `layer2s` or unsupported
-  BGP families
+- VRF tables and interface attachments
+- static routes (IPv4/IPv6, varying prefix lengths)
+- policy routes (multi-protocol, ports, nexthop/vrf actions)
+- BGP peers with address families (ipv4, ipv6, l2vpn-evpn)
+- BGP structured filters (~40% of peers): importFilter/exportFilter with
+  prefix matchers (ge/le), community matchers (exact-match), route
+  modifications (addCommunities, removeAllCommunities, additive)
+- EVPN fields on fabric VRFs (~40%): vni, evpnExportRouteTargets,
+  evpnImportRouteTargets, evpnExportFilter, vrfImports
+- Layer2 domains (~35%): vni, vlan, mtu, routeTarget, IRB (ipAddresses,
+  macAddress, vrf)
+- netplan addresses, routes, and nameserver sets
+- optional unsupported-but-well-formed fields (unsupported BGP families,
+  mirrorAcls)
 
 ## Run It
 

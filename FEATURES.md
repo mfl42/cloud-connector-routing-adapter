@@ -1,0 +1,254 @@
+# Features
+
+Ce document liste en langage simple toutes les fonctions de l'adaptateur
+cloud-connector-routing-adapter. Il est destiné aux utilisateurs et
+contributeurs qui veulent comprendre ce que fait le logiciel sans lire le code.
+
+## Ce que fait l'adaptateur
+
+L'adaptateur lit des objets de configuration reseau depuis Kubernetes
+(NodeNetworkConfig, NodeNetplanConfig) et les traduit en commandes VyOS
+(`set ...`) envoyees a un routeur via son API HTTPS.
+
+Il fonctionne en boucle : il surveille les changements Kubernetes, calcule
+les differences avec la derniere configuration appliquee, et envoie
+uniquement ce qui a change au routeur.
+
+---
+
+## Traduction reseau
+
+### VRF (Virtual Routing and Forwarding)
+
+Chaque VRF declare dans Kubernetes produit :
+- une table de routage VyOS (`set vrf name '<nom>' table '<id>'`)
+- le rattachement des interfaces au VRF
+- la prise en charge des sous-interfaces VLAN (`eth0.100` traduit en `vif 100`)
+
+Trois sources de VRF sont reconnues : `clusterVRF`, `fabricVRFs`, `localVRFs`.
+
+### Routes statiques
+
+Chaque route statique produit une commande VyOS avec :
+- le prefixe de destination (IPv4 ou IPv6, detecte automatiquement)
+- l'adresse du prochain saut ou l'interface de sortie
+- la famille d'adresse est detectee automatiquement (route vs route6)
+
+### Policy routes (routage par politique)
+
+Les regles de filtrage du trafic sont traduites en `policy route` VyOS :
+- filtrage par prefixe source/destination, protocole (tcp, udp, icmp, gre),
+  ports source/destination
+- une regle VyOS par protocole supporte (rule_id incremente)
+- action : `set nexthop` (prioritaire), `set vrf`, ou `set table`
+- detection automatique IPv4 vs IPv6 pour le choix `policy route` vs `policy route6`
+
+### BGP
+
+Configuration complete des voisins BGP par VRF :
+- ASN local, router-id
+- adresse du voisin, ASN distant
+- update-source, ebgp-multihop, password
+- timers keepalive/holdtime (les deux doivent etre presents)
+- BFD, graceful-restart
+- familles d'adresses : ipv4-unicast, ipv6-unicast, l2vpn-evpn
+
+### Filtres BGP (import/export)
+
+Les objets `importFilter` et `exportFilter` du CRD sont compiles en objets
+VyOS :
+- **route-map** : une regle par item de filtre, avec action permit/deny
+- **prefix-list** (IPv4) ou **prefix-list6** (IPv6) : pour le filtrage par
+  prefixe, avec contraintes de longueur ge/le
+- **community-list** : pour le filtrage par communaute BGP, avec exact-match
+- modifications de route : ajout/suppression de communautes, mode additif
+- regle par defaut (rule 65535) pour l'action par defaut du filtre
+- liaison au voisin BGP via `route-map import|export`
+
+Les references simples par nom (`routeMap`, `prefixList`, `distributionList`)
+ne sont pas compilees et restent marquees comme non supportees.
+
+### Interfaces (NodeNetplanConfig)
+
+Traduction des interfaces reseau depuis le format netplan :
+- adresses IP (CIDR)
+- DHCP v4 et v6
+- MTU
+- routes statiques avec metrique optionnelle
+- serveurs DNS
+- deux formats supportes : legacy (`spec.interfaces`) et natif netplan
+  (`spec.desiredState.network.ethernets`, bonds, bridges, vlans, etc.)
+- detection automatique du type d'interface (ethernet, bonding, bridge,
+  dummy, wireguard, vxlan, etc.)
+
+### VXLAN et EVPN (layer2)
+
+Chaque domaine Layer2 (`spec.layer2s`) produit :
+- une interface VXLAN (`set interfaces vxlan vxlan<VNI> vni '<VNI>'`)
+- un pont bridge (`set interfaces bridge br<VLAN>`)
+- le rattachement du VXLAN au bridge
+- si IRB present : adresses IP, adresse MAC, rattachement VRF sur le bridge
+
+Pour les fabric VRFs avec EVPN :
+- liaison VNI au VRF (`set vrf name '<vrf>' vni '<vni>'`)
+- activation de la famille d'adresses l2vpn-evpn
+- `advertise-all-vni` emis implicitement
+- route targets export/import
+- filtre EVPN export compile en route-map
+- imports inter-VRF avec filtre optionnel
+
+Limitations connues :
+- l'adresse source VTEP n'est pas dans le CRD (VyOS utilise le loopback)
+- le Route Distinguisher est auto-genere par VyOS
+- les mirrorAcls (mirroring GRE) ne sont pas encore traduits
+
+---
+
+## Reconciliation et resilience
+
+### Detection de changement
+
+L'adaptateur calcule un digest SHA-256 de la liste de commandes. Si le
+digest n'a pas change depuis la derniere application, aucune commande n'est
+envoyee (noop). Cela garantit l'idempotence.
+
+### Application par lot (batch)
+
+Toutes les commandes sont envoyees en une seule requete HTTP au routeur
+VyOS (`/configure-list`). Pas de requete par commande.
+
+### Diff partiel
+
+Quand un document est modifie (ex: suppression d'un peer BGP), l'adaptateur
+calcule les commandes qui ont disparu et genere des `delete` avant d'envoyer
+les nouveaux `set`. Les voisins BGP supprimes sont consolides en un seul
+`delete ... neighbor` au lieu de supprimer chaque feuille individuellement.
+
+### Teardown complet
+
+Quand un document est supprime de Kubernetes, toutes les commandes
+correspondantes sont inversees en `delete` et envoyees au routeur.
+
+### Rollback en cas d'echec
+
+Si l'envoi des commandes echoue (commit error VyOS), l'adaptateur appelle
+`discard` pour annuler les changements en attente. Le prochain cycle repart
+de zero.
+
+### Tolerance aux erreurs idempotentes
+
+Si le routeur repond "already exists" lors d'un fallback sequentiel, c'est
+considere comme un succes (la commande est deja appliquee).
+
+---
+
+## Observation et statut
+
+### Conditions Kubernetes
+
+Chaque document recoit des conditions de statut patchees sur le subresource
+Kubernetes :
+
+| Condition | Signification |
+|-----------|---------------|
+| DesiredSeen | L'adaptateur a enregistre la configuration desiree |
+| Applied | Une configuration a ete appliquee au routeur |
+| InSync | La configuration desiree et appliquee sont identiques |
+| Reconciling | Un changement est en attente d'application |
+| Degraded | La derniere operation a echoue |
+| Available | L'adaptateur est en phase avec l'etat desire |
+| HasWarnings | Des avertissements de traduction existent |
+| HasUnsupported | Des elements non supportes ont ete detectes |
+| Deleted | Le document a ete supprime de la source |
+| Error | Erreur lors de la derniere operation |
+
+### Rapport de statut local
+
+Un fichier JSON de statut est genere localement avec le detail par document :
+phase, revision, digest, compteurs de commandes/warnings/unsupported,
+timestamps.
+
+---
+
+## Infrastructure du controller
+
+### Watch Kubernetes (informer)
+
+Un thread en arriere-plan surveille en continu les changements Kubernetes.
+Les evenements sont pousses dans une file d'attente. La boucle principale
+se reveille immediatement quand un changement arrive, au lieu d'attendre
+la fin d'un timeout.
+
+- backoff exponentiel en cas d'erreurs (0.2s a 30s)
+- resynchronisation complete toutes les 30 minutes
+- relist automatique sur erreur 410 (watch expire)
+
+### Election de leader
+
+Si plusieurs instances de l'adaptateur tournent en parallele, un mecanisme
+de Lease Kubernetes (`coordination.k8s.io/v1`) garantit qu'une seule
+instance envoie des commandes au routeur.
+
+- les non-leaders continuent de calculer les differences localement
+- si le leader tombe, un autre prend le relais automatiquement
+- configurable via `--enable-leader-election`, `--leader-id`,
+  `--lease-namespace`, `--lease-duration-seconds`
+
+### Mode cluster-scoped
+
+L'adaptateur peut surveiller les CRDs au niveau cluster (tous les namespaces)
+au lieu d'un seul namespace. Configurable via `--cluster-scoped-source` et
+`--cluster-scoped-status`.
+
+---
+
+## Tests
+
+Trois suites de tests locaux valident chaque feature sans cluster ni routeur :
+
+### Boundary (16 scenarios)
+
+Tests deterministes de cas limites :
+- interfaces (types inconnus, VLAN, loopback)
+- routes statiques et policy routes (prefixes invalides, ports extremes)
+- BGP (familles inconnues, peer sans adresse, timers incomplets)
+- netplan (routes sans via, adresses invalides, nameservers)
+- valeurs invalides (prefixes/IPs malformes)
+- reconciliation sans commande (document vide)
+- structures malformees (spec pas un objet, routes pas une liste)
+- format desiredState (wrapped, unwrapped, bonds, vide)
+- regex BGP avec quotes echappees
+- grande topologie (10 VRF x 10 peers x 100 routes x 2 VLAN = 1240 commandes)
+- URLs cluster-scoped vs namespace-scoped
+- conditions CRA (5 etats de phase)
+- compilation route-map BGP (prefix, community, exact-match, modifications)
+- election de leader (expiration, parsing, NoopLeaseManager)
+- edge cases filtres BGP (action "next", matchers vides, ge>le, conflits)
+- EVPN + VXLAN + layer2 + IRB (fabric VRF complet)
+
+### Chaos (12 scenarios)
+
+Injection de fautes simulant des pannes reelles :
+- timeout VyOS puis recovery
+- echec status Kubernetes 409 puis convergence
+- churn de watch, suppression, prune des tombstones
+- retry HTTP patch Kubernetes (transport loss, 503)
+- echec commit VyOS puis rollback + retry
+- URL patch status en mode cluster-scoped
+- propagation du flag cluster_scoped_status
+- echec route-map apply puis retry
+- non-leader skip apply, leader apply
+- event queue informer (2 iterations, changement detecte)
+- exception pendant acquisition du lease
+- renouvellement lease multi-cycle (leader, leader, non-leader)
+
+### Fuzz (120 iterations, ~6300 commandes)
+
+Generation aleatoire de configurations incluant :
+- VRFs avec noms, tables, routes, peers BGP aleatoires
+- filtres BGP structures (prefix/community matchers, ge/le, modifications)
+- champs EVPN sur fabric VRFs (vni, route targets, export filters)
+- layer2s complets (vni, vlan, mtu, routeTarget, IRB)
+- policy routes avec protocoles mixtes
+- netplan avec interfaces, adresses, routes, DNS
+- verification : aucun crash, deuxieme passe = 0 commandes en attente
