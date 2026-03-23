@@ -4,11 +4,70 @@ Ce document liste en langage simple toutes les fonctions de l'adaptateur
 cloud-connector-routing-adapter. Il est destiné aux utilisateurs et
 contributeurs qui veulent comprendre ce que fait le logiciel sans lire le code.
 
-## Ce que fait l'adaptateur
+---
 
-L'adaptateur lit des objets de configuration reseau depuis Kubernetes
-(NodeNetworkConfig, NodeNetplanConfig) et les traduit en commandes VyOS
-(`set ...`) envoyees a un routeur via son API HTTPS.
+## Contexte : Sylva, Kubernetes et les CRDs
+
+### Qu'est-ce que Sylva ?
+
+Sylva est un framework open source de la Linux Foundation, porte par des
+operateurs telecom (Deutsche Telekom, Orange, etc.). Son objectif : fournir
+une pile logicielle complete pour deployer et gerer des infrastructures
+telecom sur Kubernetes.
+
+Dans Sylva, le reseau n'est pas configure manuellement sur chaque routeur.
+A la place, un operateur declare la configuration souhaitee dans Kubernetes,
+et des composants logiciels (les "connecteurs") se chargent de l'appliquer
+sur les equipements reels.
+
+### Qu'est-ce qu'un CRD ?
+
+Un CRD (Custom Resource Definition) est un mecanisme Kubernetes qui permet
+de definir ses propres types d'objets. Par defaut, Kubernetes gere des Pods,
+des Services, des Deployments. Un CRD permet d'ajouter un nouveau type —
+par exemple `NodeNetworkConfig` — que Kubernetes stocke, versionne et
+surveille exactement comme ses objets natifs.
+
+Un CRD permet :
+- de decrire une configuration souhaitee de maniere declarative (YAML/JSON)
+- de la stocker dans l'API Kubernetes avec versioning et controle d'acces
+- de declencher des actions automatiques quand l'objet est cree, modifie ou
+  supprime (via un controller ou un operateur)
+- de rapporter un statut (`status` subresource) pour indiquer si la
+  configuration a ete appliquee avec succes
+
+### Les APIs network-connector de Sylva
+
+Le composant `network-connector` de Sylva definit deux CRDs principaux pour
+la configuration reseau :
+
+**NodeNetworkConfig** — configuration reseau L3 d'un noeud :
+- VRFs (Virtual Routing and Forwarding) avec tables de routage
+- routes statiques IPv4/IPv6
+- voisins BGP avec ASN, timers, filtres import/export
+- policy routes (routage par politique avec filtrage par prefixe/port/protocole)
+- interfaces rattachees aux VRFs (Ethernet, VLAN, bonding, etc.)
+- domaines Layer2 avec VXLAN/EVPN (VNI, bridge, IRB)
+- fabric VRFs avec route targets et filtres EVPN
+
+**NodeNetplanConfig** — configuration reseau L2/L3 d'un noeud au format netplan :
+- adresses IP des interfaces
+- routes statiques avec metrique
+- DHCP v4/v6
+- MTU
+- serveurs DNS
+
+Ces CRDs sont la "source de verite" : ils decrivent l'etat reseau desire.
+Un operateur humain ou un systeme d'orchestration les cree/modifie dans
+Kubernetes. Un connecteur (comme cet adaptateur) les lit et les applique
+sur l'equipement cible.
+
+### Role de cet adaptateur
+
+Cet adaptateur est le connecteur entre les CRDs Sylva et un routeur VyOS.
+Il lit les objets `NodeNetworkConfig` et `NodeNetplanConfig` depuis
+Kubernetes, les traduit en commandes VyOS (`set ...`), et les envoie au
+routeur via son API HTTPS.
 
 Il fonctionne en boucle : il surveille les changements Kubernetes, calcule
 les differences avec la derniere configuration appliquee, et envoie
