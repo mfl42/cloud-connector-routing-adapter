@@ -82,16 +82,16 @@ class StatusReport:
         return json.dumps(self.to_dict(), indent=2)
 
 
-def build_status_report(state: ReconcileState) -> StatusReport:
-    documents = [_build_document_status(item) for item in _sorted_documents(state)]
-    return StatusReport(document_count=len(documents), documents=documents)
+def build_status_report(state: ReconcileState, *, now: str | None = None) -> StatusReport:
+    timestamp = now or _utc_now()
+    documents = [_build_document_status(item, now=timestamp) for item in _sorted_documents(state)]
+    return StatusReport(generated_at=timestamp, document_count=len(documents), documents=documents)
 
 
 def write_status_report(state: ReconcileState, path: str | Path) -> StatusReport:
     report = build_status_report(state)
     output_path = Path(path)
-    if output_path.parent != Path("."):
-        output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     with NamedTemporaryFile(
         "w",
         encoding="utf-8",
@@ -106,9 +106,9 @@ def write_status_report(state: ReconcileState, path: str | Path) -> StatusReport
     return report
 
 
-def _build_document_status(document: DocumentState) -> DocumentStatusReport:
+def _build_document_status(document: DocumentState, *, now: str | None = None) -> DocumentStatusReport:
     phase = _phase(document)
-    transition_time = document.last_applied_at or document.last_seen_at or _utc_now()
+    transition_time = document.last_applied_at or document.last_seen_at or now or _utc_now()
     desired_seen = StatusCondition(
         type="DesiredSeen",
         status="True" if document.desired_revision or document.desired_digest else "False",
