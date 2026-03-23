@@ -9,7 +9,7 @@ questions:
 - what failed during development and was corrected
 - what is still outside the current stability claim
 
-The current report reflects the branch state as of March 23, 2026 (main after PR #24 — cluster-scoped wiring, CRA status conditions).
+The current report reflects the branch state as of March 23, 2026 (main after PR #28 — BGP route-map compilation).
 
 ## Scope Of The Stability Claim
 
@@ -137,6 +137,28 @@ python3 scripts/fuzz-hbr-api-local.py --iterations 30
 ```
 
 Results: identical to `main` — boundary `7/7`, chaos `4/4`, fuzz `30/30`
+
+---
+
+### 2026-03-23 — BGP route-map / importFilter / exportFilter compilation
+
+Context:
+
+- ROADMAP item #4 (high complexity): structured `importFilter`/`exportFilter` compiled into VyOS
+  `route-map`, `prefix-list`/`prefix-list6`, `community-list` with binding per address-family
+- Coverage gaps for items #5/#6 also closed (Deleted phase, cluster-scoped patch URL)
+
+Branches tested: `feat/bgp-route-map-compilation` → `dev` → `main` (PR #27, #28)
+
+Commands:
+
+```bash
+python3 scripts/boundary-hbr-api-local.py
+python3 scripts/chaos-hbr-api-local.py
+python3 scripts/fuzz-hbr-api-local.py --iterations 120
+```
+
+Results: boundary `13/13`, chaos `8/8`, fuzz `120/120`
 
 ---
 
