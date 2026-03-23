@@ -17,6 +17,7 @@ if str(REPO_ROOT) not in sys.path:
 from hbr_vyos_adapter.controller import DocumentSource
 from hbr_vyos_adapter.controller import SourceUpdate
 from hbr_vyos_adapter.controller import run_controller
+from hbr_vyos_adapter.k8s_lease import LeaseManager
 from hbr_vyos_adapter.k8s_status import KubeConnection
 from hbr_vyos_adapter.k8s_status import KubeStatusWriter
 from hbr_vyos_adapter.k8s_status import StatusPatchPlan
@@ -890,6 +891,167 @@ def scenario_route_map_apply_failure_and_retry() -> dict:
     }
 
 
+class FakeLeaseManager(LeaseManager):
+    """Configurable leader election stub for testing."""
+
+    def __init__(self, is_leader_sequence: list[bool]) -> None:
+        self._sequence = list(is_leader_sequence)
+        self._is_leader = False
+        self._leader_id = "test-pod-1"
+        self.acquire_calls = 0
+
+    def acquire(self) -> bool:
+        self.acquire_calls += 1
+        if self._sequence:
+            self._is_leader = self._sequence.pop(0)
+        return self._is_leader
+
+    def release(self) -> None:
+        self._is_leader = False
+
+    @property
+    def is_leader(self) -> bool:
+        return self._is_leader
+
+    @property
+    def holder_identity(self) -> str:
+        return self._leader_id
+
+
+def scenario_leader_election_skip_apply() -> dict:
+    """Non-leader instance skips VyOS apply; leader instance applies."""
+    scenario_dir = ARTIFACT_DIR / "leader-election-skip-apply"
+    reset_dir(scenario_dir)
+    state_file = scenario_dir / "state.json"
+    status_file = scenario_dir / "status.json"
+
+    network_base, netplan_base = load_base_documents()
+    network = clone_network_config(
+        network_base, revision="chaos-leader-1", generation=70, resource_version="1500"
+    )
+    netplan = clone_netplan_config(
+        netplan_base, generation=70, resource_version="1600",
+        nameservers=["192.0.2.53"],
+    )
+
+    # Non-leader: acquire returns False → apply should NOT happen
+    non_leader_client = ScriptedVyosClient([{"success": True}])
+    non_leader_lease = FakeLeaseManager([False])
+    non_leader_result = run_controller(
+        source=StaticSource([network, netplan]),
+        state_file=str(state_file),
+        status_file=str(status_file),
+        once=True,
+        apply=True,
+        vyos_client=non_leader_client,
+        write_status=True,
+        status_writer=ScriptedStatusWriter([]),
+        lease_manager=non_leader_lease,
+    )
+    write_json(scenario_dir / "result-non-leader.json", non_leader_result.to_dict())
+
+    assert non_leader_result.iterations[0].ok, non_leader_result.to_dict()
+    assert non_leader_result.iterations[0].apply_performed is False, (
+        "non-leader should NOT apply"
+    )
+    assert len(non_leader_client.calls) == 0, "non-leader should make zero VyOS calls"
+
+    # Leader: acquire returns True → apply should happen
+    leader_client = ScriptedVyosClient([{"success": True}])
+    leader_lease = FakeLeaseManager([True])
+    leader_result = run_controller(
+        source=StaticSource([network, netplan]),
+        state_file=str(state_file),
+        status_file=str(status_file),
+        once=True,
+        apply=True,
+        vyos_client=leader_client,
+        write_status=True,
+        status_writer=ScriptedStatusWriter([]),
+        lease_manager=leader_lease,
+    )
+    write_json(scenario_dir / "result-leader.json", leader_result.to_dict())
+
+    assert leader_result.iterations[0].ok, leader_result.to_dict()
+    assert leader_result.iterations[0].apply_performed is True, "leader should apply"
+    assert len(leader_client.calls) == 1, f"leader should make 1 VyOS call, got {len(leader_client.calls)}"
+
+    return {
+        "scenario": "leader-election-skip-apply",
+        "non_leader_applied": non_leader_result.iterations[0].apply_performed,
+        "leader_applied": leader_result.iterations[0].apply_performed,
+        "non_leader_vyos_calls": len(non_leader_client.calls),
+        "leader_vyos_calls": len(leader_client.calls),
+    }
+
+
+def scenario_informer_event_queue() -> dict:
+    """Informer-pattern: ScriptedSource pushes events, controller consumes them immediately."""
+    scenario_dir = ARTIFACT_DIR / "informer-event-queue"
+    reset_dir(scenario_dir)
+    state_file = scenario_dir / "state.json"
+    status_file = scenario_dir / "status.json"
+
+    network_base, netplan_base = load_base_documents()
+    network_v1 = clone_network_config(
+        network_base, revision="informer-1", generation=80, resource_version="1700"
+    )
+    netplan_v1 = clone_netplan_config(
+        netplan_base, generation=80, resource_version="1800",
+        nameservers=["192.0.2.53"],
+    )
+    network_v2 = clone_network_config(
+        network_base, revision="informer-2", generation=81, resource_version="1701",
+        extra_route_prefix="198.51.100.0/24",
+    )
+
+    nnc_key = _document_key(network_v1)
+    nnpc_key = _document_key(netplan_v1)
+
+    # Initial apply → then update via ScriptedSource (simulates informer push)
+    updates = [
+        SourceUpdate(
+            documents=[network_v2],
+            changed_keys={nnc_key},
+            current_keys={nnc_key, nnpc_key},
+        ),
+    ]
+    source = ScriptedSource([network_v1, netplan_v1], updates)
+    vyos_client = ScriptedVyosClient([
+        {"success": True, "operations": [{"success": True}]},
+        {"success": True, "operations": [{"success": True}]},
+    ])
+
+    result = run_controller(
+        source=source,
+        state_file=str(state_file),
+        status_file=str(status_file),
+        interval_seconds=0.01,
+        once=False,
+        max_iterations=2,
+        apply=True,
+        vyos_client=vyos_client,
+        write_status=True,
+        status_writer=ScriptedStatusWriter([None, None]),
+    )
+    write_json(scenario_dir / "result.json", result.to_dict())
+
+    assert len(result.iterations) == 2, result.to_dict()
+    assert result.iterations[0].ok, result.iterations[0].to_dict()
+    assert result.iterations[0].apply_performed, result.iterations[0].to_dict()
+    assert result.iterations[1].ok, result.iterations[1].to_dict()
+    assert result.iterations[1].apply_performed, result.iterations[1].to_dict()
+    # Second iteration should have detected the route change
+    assert result.iterations[1].changed_documents >= 1, result.iterations[1].to_dict()
+
+    return {
+        "scenario": "informer-event-queue",
+        "iterations": len(result.iterations),
+        "both_applied": all(i.apply_performed for i in result.iterations),
+        "second_changed": result.iterations[1].changed_documents,
+    }
+
+
 def main() -> int:
     if len(sys.argv) > 1 and sys.argv[1] not in {"run"}:
         print("usage: chaos-hbr-api-local.py [run]", file=sys.stderr)
@@ -906,6 +1068,8 @@ def main() -> int:
         scenario_cluster_scoped_patch_url(),
         scenario_cluster_scoped_status_wiring(),
         scenario_route_map_apply_failure_and_retry(),
+        scenario_leader_election_skip_apply(),
+        scenario_informer_event_queue(),
     ]
     summary = {
         "scenarioCount": len(summaries),

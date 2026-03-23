@@ -8,6 +8,9 @@ from .controller import FileDocumentSource
 from .controller import KubernetesDocumentSource
 from .controller import run_controller
 from .k8s_documents import KubeDocumentClient
+from .k8s_lease import KubeLeaseManager
+from .k8s_lease import LeaseManager
+from .k8s_lease import NoopLeaseManager
 from .k8s_status import load_kube_connection
 from .k8s_status import KubeStatusWriter
 from .loader import load_documents
@@ -218,6 +221,25 @@ def main() -> int:
         help="Restrict the Kubernetes source to one or more supported kinds",
     )
     controller_parser.add_argument("--json", action="store_true", help="Emit JSON instead of text")
+    controller_parser.add_argument(
+        "--enable-leader-election",
+        action="store_true",
+        help="Enable Kubernetes Lease-based leader election",
+    )
+    controller_parser.add_argument(
+        "--leader-id",
+        help="Leader identity (defaults to hostname or PID)",
+    )
+    controller_parser.add_argument(
+        "--lease-namespace",
+        help="Namespace for the Lease object (defaults to --source-namespace or 'default')",
+    )
+    controller_parser.add_argument(
+        "--lease-duration-seconds",
+        type=int,
+        default=15,
+        help="Lease duration in seconds (default: 15)",
+    )
 
     apply_parser = subparsers.add_parser("apply", help="Apply translated commands to a VyOS target")
     apply_parser.add_argument("--file", required=True, help="Path to YAML or JSON document")
@@ -328,6 +350,7 @@ def main() -> int:
             )
 
         document_source = _build_document_source(args)
+        lease_mgr = _build_lease_manager(args)
 
         result = run_controller(
             source=document_source,
@@ -343,6 +366,7 @@ def main() -> int:
             dry_run_status=args.dry_run_status,
             cluster_scoped_status=args.cluster_scoped_status,
             deleted_retention_seconds=args.deleted_retention_seconds,
+            lease_manager=lease_mgr,
         )
         _print_controller_result(result, json_output=args.json)
         return 0
@@ -450,6 +474,24 @@ def _build_kube_connection(
         server=resolved_server,
         token=token,
         verify_tls=verify_tls,
+    )
+
+
+def _build_lease_manager(args) -> LeaseManager:
+    if not getattr(args, "enable_leader_election", False):
+        return NoopLeaseManager()
+    connection = _build_kube_connection(
+        kubeconfig=args.kubeconfig,
+        context=args.context,
+        server=args.server,
+        token=args.token,
+        verify_tls=args.verify_k8s_tls,
+    )
+    return KubeLeaseManager(
+        connection=connection,
+        lease_namespace=args.lease_namespace or args.source_namespace or "default",
+        leader_id=args.leader_id or "",
+        lease_duration_seconds=args.lease_duration_seconds,
     )
 
 
