@@ -9,7 +9,7 @@ questions:
 - what failed during development and was corrected
 - what is still outside the current stability claim
 
-The current report reflects the branch state as of March 23, 2026.
+The current report reflects the branch state as of March 23, 2026 (feat/policy-route-nexthop-address).
 
 ## Scope Of The Stability Claim
 
@@ -137,6 +137,27 @@ python3 scripts/fuzz-hbr-api-local.py --iterations 30
 ```
 
 Results: identical to `main` — boundary `7/7`, chaos `4/4`, fuzz `30/30`
+
+---
+
+### 2026-03-23 — policy-route nexthop address + CRD sync
+
+Context:
+
+- `policyRoute.nextHop.address` now emits `set nexthop '<addr>'` (previously a warning, no command)
+- Local CRDs synced from upstream `network-connector@main` (drift check: no drift)
+
+Branches tested: `feat/policy-route-nexthop-address` from `dev`
+
+Commands:
+
+```bash
+python3 scripts/boundary-hbr-api-local.py
+python3 scripts/chaos-hbr-api-local.py
+python3 scripts/fuzz-hbr-api-local.py --iterations 30
+```
+
+Results: boundary `8/8`, chaos `4/4`, fuzz `30/30`
 
 ---
 
