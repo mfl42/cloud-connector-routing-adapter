@@ -366,20 +366,20 @@ observability.
 
 ---
 
-### 4 — BGP route-map / import-export filter compilation (high / high priority)
+### ~~4 — BGP route-map / import-export filter compilation~~ ✓
 
-The upstream CRD defines per-address-family `importFilter` and `exportFilter`
-objects (with `defaultAction`, `items`, prefix matchers, community modifiers).
-Simple string variants (`routeMap`, `prefixList`, `distributionList`) are also
-handled.
+Structured `importFilter` / `exportFilter` objects from the CRD are now compiled
+into VyOS policy objects:
 
-Current behaviour: all filter/route-map field names are recognised (no longer
-surfaced as "unknown fields") and emitted as a dedicated unsupported marker:
-`has route-map/filter fields (...); route-map compilation not yet supported`.
+- `set policy route-map '<name>' rule '<N>' action 'permit|deny'` per filter item
+- `set policy prefix-list|prefix-list6 '<name>'` with optional `ge`/`le` for prefix matchers
+- `set policy community-list '<name>'` with optional `exact-match` for community matchers
+- Route modification: `set community`, `set community additive`, `set community 'none'`,
+  `set comm-list delete`
+- Default action rule (65535) per route-map
+- Binding: `route-map import|export '<name>'` on BGP neighbor address-family
 
-What is missing: compilation of filter specs into VyOS `set policy route-map`
-objects and binding them to the BGP neighbor per address-family. This requires
-a new translation stage (route-map object registry + per-rule emit).
+Simple string references (`routeMap`, `prefixList`, `distributionList`) remain unsupported.
 
 ---
 
