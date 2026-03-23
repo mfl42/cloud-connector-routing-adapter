@@ -713,6 +713,129 @@ def scenario_bgp_delete_regex_quotes() -> dict:
     }
 
 
+def scenario_large_topology() -> dict:
+    """10 VRFs × 10 BGP peers × 2 VLAN subinterfaces × 100 static routes per VRF.
+
+    Validates that the translator and reconcile layer handle a realistic
+    large-scale topology without crashes, command duplication, or digest
+    instability.
+    """
+    scenario_dir = ARTIFACT_DIR / "large-topology"
+    reset_dir(scenario_dir)
+    state_file  = scenario_dir / "state.json"
+    status_file = scenario_dir / "status.json"
+
+    N_VRFS      = 10
+    N_PEERS     = 10
+    N_VLANS     = 2
+    N_ROUTES    = 100
+
+    local_vrfs: dict = {}
+    for v in range(N_VRFS):
+        vrf_name = f"tenant-{v:02d}"
+        table    = 1000 + v
+
+        static_routes = []
+        for r in range(N_ROUTES):
+            prefix   = f"10.{v}.{r // 256}.{r % 256}/32"
+            next_hop = f"192.168.{v}.1"
+            static_routes.append({"prefix": prefix, "nextHop": {"address": next_hop}})
+
+        bgp_peers = []
+        for p in range(N_PEERS):
+            bgp_peers.append({
+                "address": f"172.16.{v}.{p + 1}",
+                "remoteASN": 65000 + v * 10 + p,
+                "addressFamilies": ["ipv4-unicast"],
+            })
+
+        interfaces = []
+        for vlan in range(N_VLANS):
+            interfaces.append(f"eth{v}.{100 + vlan}")
+
+        local_vrfs[vrf_name] = {
+            "table": table,
+            "interfaces": interfaces,
+            "staticRoutes": static_routes,
+            "bgpPeers": bgp_peers,
+            "localASN": 65000 + v,
+        }
+
+    document = load_document({
+        "apiVersion": "network.t-caas.telekom.com/v1alpha1",
+        "kind": "NodeNetworkConfig",
+        "metadata": {"name": "large-topology-node"},
+        "spec": {
+            "revision": "large-topo-r1",
+            "localVRFs": local_vrfs,
+        },
+    })
+
+    translator = VyosTranslator()
+    result = translator.translate(document)
+    write_json(scenario_dir / "translation.json", {
+        "commandCount": len(result.commands),
+        "warningCount": len(result.warnings),
+        "unsupportedCount": len(result.unsupported),
+        "commands": result.commands,
+    })
+
+    # No crashes, expected command volume:
+    # at minimum table + routes + remote-as + address-family per VRF
+    expected_min_commands = N_VRFS * (1 + N_ROUTES + N_PEERS + N_PEERS)
+    assert len(result.commands) >= expected_min_commands, (
+        f"expected >= {expected_min_commands} commands, got {len(result.commands)}"
+    )
+    # All 100 routes present for VRF 0
+    assert sum(1 for c in result.commands if "10.0." in c and "next-hop" in c) == N_ROUTES, (
+        "route count mismatch for tenant-00"
+    )
+
+    # No duplicate commands
+    assert len(result.commands) == len(set(result.commands)), "duplicate commands detected"
+
+    # Reconcile — first pass applies
+    client = GuardClient()
+    rec1 = reconcile_documents(
+        [document],
+        translator,
+        ReconcileState(),
+        str(state_file),
+        apply=True,
+        client=client,
+        status_file=str(status_file),
+    )
+    write_json(scenario_dir / "reconcile-1.json", rec1.to_dict())
+    assert rec1.apply_performed, "first reconcile should apply"
+    assert client.calls == 1, client.calls
+
+    # Reconcile — second pass is a noop (digest stable)
+    state2 = ReconcileState.load(str(state_file))
+    rec2 = reconcile_documents(
+        [document],
+        translator,
+        state2,
+        str(state_file),
+        apply=True,
+        client=client,
+        status_file=str(status_file),
+    )
+    write_json(scenario_dir / "reconcile-2.json", rec2.to_dict())
+    assert not rec2.apply_performed, "second reconcile should be a noop"
+    assert client.calls == 1, f"client called again on noop: {client.calls}"
+
+    return {
+        "scenario": "large-topology",
+        "vrfCount": N_VRFS,
+        "peersPerVrf": N_PEERS,
+        "vlansPerVrf": N_VLANS,
+        "routesPerVrf": N_ROUTES,
+        "totalCommands": len(result.commands),
+        "warnings": len(result.warnings),
+        "noop": not rec2.apply_performed,
+    }
+
+
 def main() -> int:
     ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
     summaries = [
@@ -725,6 +848,7 @@ def main() -> int:
         scenario_malformed_structure_boundaries(),
         scenario_desired_state_boundaries(),
         scenario_bgp_delete_regex_quotes(),
+        scenario_large_topology(),
     ]
     summary = {
         "scenarioCount": len(summaries),
