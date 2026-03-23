@@ -17,7 +17,12 @@ if str(REPO_ROOT) not in sys.path:
 
 from hbr_vyos_adapter.k8s_documents import KubeDocumentClient
 from hbr_vyos_adapter.k8s_lease import KubeLeaseManager, LeaseState, NoopLeaseManager, _parse_lease
-from hbr_vyos_adapter.k8s_resources import CustomResourceSpec
+from hbr_vyos_adapter.k8s_resources import (
+    CustomResourceSpec,
+    KNOWN_API_VARIANTS,
+    SUPPORTED_CUSTOM_RESOURCES,
+    activate_all_known_variants,
+)
 from hbr_vyos_adapter.k8s_status import KubeConnection
 from hbr_vyos_adapter.models import load_document
 from hbr_vyos_adapter.reconcile import reconcile_documents, _BGP_NEIGHBOR_RE, _SCALAR_LEAF_RE
@@ -1471,6 +1476,125 @@ def scenario_evpn_vxlan_layer2() -> dict:
     }
 
 
+def scenario_api_autodiscovery() -> dict:
+    """Verify API group auto-discovery: variant registration, 404 tolerance, URL construction."""
+    scenario_dir = ARTIFACT_DIR / "api-autodiscovery"
+    reset_dir(scenario_dir)
+
+    # --- activate_all_known_variants registers all variants ---
+    initial_count = len(SUPPORTED_CUSTOM_RESOURCES)
+    activate_all_known_variants()
+    after_count = len(SUPPORTED_CUSTOM_RESOURCES)
+    # Should have added the 4 KNOWN_API_VARIANTS (v1beta1 x2 + sylva.io x2)
+    expected_total = initial_count + len(KNOWN_API_VARIANTS)
+    assert after_count == expected_total, (
+        f"expected {expected_total} resources after activation, got {after_count}"
+    )
+
+    # Verify all known variants are now in SUPPORTED_CUSTOM_RESOURCES
+    supported_versions = {(r.api_version, r.kind) for r in SUPPORTED_CUSTOM_RESOURCES}
+    for variant in KNOWN_API_VARIANTS:
+        assert (variant.api_version, variant.kind) in supported_versions, (
+            f"variant {variant.api_version}/{variant.kind} not registered"
+        )
+
+    # Idempotent: calling again doesn't duplicate
+    activate_all_known_variants()
+    assert len(SUPPORTED_CUSTOM_RESOURCES) == after_count, "double activation should not duplicate"
+
+    # --- _get_json_safe returns None on 404 ---
+    conn = KubeConnection(server="https://k8s.test:6443", verify_tls=False)
+    client = KubeDocumentClient(connection=conn)
+
+    # Test _get_json_safe with a fake 404 response
+    class FakeResponse:
+        def __init__(self, code):
+            self.status_code = code
+        def json(self):
+            return {"items": []}
+
+    import sys
+    class FakeRequests:
+        def __init__(self, response):
+            self._response = response
+            self.calls = []
+        def get(self, url, **kwargs):
+            self.calls.append(url)
+            return self._response
+
+    # 404 → returns None
+    fake_404 = FakeRequests(FakeResponse(404))
+    original_requests = sys.modules.get("requests")
+    sys.modules["requests"] = fake_404
+    try:
+        result_404 = client._get_json_safe("https://k8s.test/apis/fake/v1/things", "FakeThing")
+    finally:
+        if original_requests is None:
+            sys.modules.pop("requests", None)
+        else:
+            sys.modules["requests"] = original_requests
+    assert result_404 is None, "404 should return None"
+    assert len(fake_404.calls) == 1
+
+    # 200 → returns dict
+    fake_200 = FakeRequests(FakeResponse(200))
+    sys.modules["requests"] = fake_200
+    try:
+        result_200 = client._get_json_safe("https://k8s.test/apis/ok/v1/things", "OkThing")
+    finally:
+        if original_requests is None:
+            sys.modules.pop("requests", None)
+        else:
+            sys.modules["requests"] = original_requests
+    assert result_200 == {"items": []}, "200 should return the JSON payload"
+
+    # --- URL construction for different API groups ---
+    resource_tcaas = CustomResourceSpec(
+        api_version="network.t-caas.telekom.com/v1alpha1",
+        kind="NodeNetworkConfig",
+        plural="nodenetworkconfigs",
+    )
+    resource_sylva = CustomResourceSpec(
+        api_version="sylva.io/v1alpha1",
+        kind="NodeNetworkConfig",
+        plural="nodenetworkconfigs",
+    )
+    url_tcaas = client._resource_url(resource_tcaas, namespace="default", cluster_scoped=False)
+    url_sylva = client._resource_url(resource_sylva, namespace="default", cluster_scoped=False)
+
+    assert "network.t-caas.telekom.com" in url_tcaas, url_tcaas
+    assert "sylva.io" in url_sylva, url_sylva
+    assert url_tcaas != url_sylva, "different API groups should produce different URLs"
+    assert "/namespaces/default/" in url_tcaas
+    assert "/namespaces/default/" in url_sylva
+
+    write_json(scenario_dir / "results.json", {
+        "initial_count": initial_count,
+        "after_activation": after_count,
+        "known_variants": len(KNOWN_API_VARIANTS),
+        "result_404": result_404,
+        "result_200_keys": list((result_200 or {}).keys()),
+        "url_tcaas": url_tcaas,
+        "url_sylva": url_sylva,
+    })
+
+    # Cleanup: remove the variants we added so subsequent test runs don't accumulate
+    to_remove = {(v.api_version, v.kind) for v in KNOWN_API_VARIANTS}
+    SUPPORTED_CUSTOM_RESOURCES[:] = [
+        r for r in SUPPORTED_CUSTOM_RESOURCES
+        if (r.api_version, r.kind) not in to_remove
+    ]
+
+    return {
+        "scenario": "api-autodiscovery",
+        "variants_registered": len(KNOWN_API_VARIANTS),
+        "total_after_activation": after_count,
+        "404_returns_none": result_404 is None,
+        "200_returns_dict": result_200 is not None,
+        "urls_differ": url_tcaas != url_sylva,
+    }
+
+
 def main() -> int:
     ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
     summaries = [
@@ -1490,6 +1614,7 @@ def main() -> int:
         scenario_leader_election_boundaries(),
         scenario_bgp_filter_edge_cases(),
         scenario_evpn_vxlan_layer2(),
+        scenario_api_autodiscovery(),
     ]
     summary = {
         "scenarioCount": len(summaries),
