@@ -1,0 +1,77 @@
+name: CI — local tests + smoke (venus)
+
+on:
+  push:
+    branches: [main, dev, "feat/**", "fix/**"]
+  pull_request:
+    branches: [main, dev]
+
+jobs:
+  # ── 1. Offline translation checks (no VyOS needed) ────────────────────────
+  check-examples:
+    name: Translation plan check
+    runs-on: [self-hosted, venus]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install package
+        run: pip install -e .
+
+      - name: Run check_examples.sh
+        run: bash scripts/check_examples.sh
+
+      - name: CLI plan (node-network-config)
+        run: |
+          python3 -m hbr_vyos_adapter.cli plan \
+            --file examples/node-network-config.json
+
+  # ── 2. Smoke test — dry-run against VyOS VM ───────────────────────────────
+  smoke-plan:
+    name: Smoke — plan phase (dry run)
+    runs-on: [self-hosted, venus]
+    needs: check-examples
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install package
+        run: pip install -e .
+
+      - name: smoke plan (node-network-config-smoke)
+        run: bash scripts/smoke-vyos-vm.sh plan
+
+  # ── 3. Smoke test — live apply against VyOS VM ───────────────────────────
+  smoke-apply:
+    name: Smoke — live apply (VyOS 192.0.2.230)
+    runs-on: [self-hosted, venus]
+    needs: smoke-plan
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev'
+    env:
+      VYOS_URL: https://192.0.2.230
+      VYOS_API_KEY: ${{ secrets.VYOS_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install package
+        run: pip install -e .
+
+      - name: VyOS API reachability check
+        run: bash scripts/smoke-vyos-vm.sh api-test
+
+      - name: Smoke apply (safe smoke manifests only)
+        run: bash scripts/smoke-vyos-vm.sh apply
+
+  # ── 4. VyOS image build (../vyos/ project) ───────────────────────────────
+  vyos-build:
+    name: VyOS build (VPP + container)
+    runs-on: [self-hosted, venus]
+    needs: check-examples
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - name: Build VyOS image
+        working-directory: /home/runner/Projects/vyos
+        run: make container
