@@ -84,6 +84,8 @@ fournit les fonctions d'un routeur professionnel :
 - **VXLAN/EVPN** : tunnels overlay L2, fabric EVPN avec route targets
 - **Firewall stateful** : filtrage de paquets avec suivi de connexion
   (nftables/conntrack), zones de securite, NAT source/destination
+- **IDS/IPS** : Suricata integre (`set service suricata`) pour la detection
+  et prevention d'intrusions avec inspection profonde des paquets
 - **Load-balancing** :
   - reverse proxy L7 via HAProxy integre (terminaison SSL/TLS, backends
     HTTP/HTTPS, health checks, algorithmes round-robin/leastconn)
