@@ -355,12 +355,21 @@ accepted; address takes priority when both are present.
 `password` / `peerPassword` / `bgpPassword` are now parsed into `BgpPeer.password`
 and emitted as `set ... neighbor '<addr>' password '<value>'`.
 
-#### BGP: route-map and prefix-list not mapped
+#### BGP: route-map / import-export filter compilation not implemented
 
-Route policies (`routeMap`, `inboundRouteMap`, `outboundRouteMap`), prefix
-filters (`prefixList`, `distributionList`), and community attributes are not
-in the supported peer field set. They are surfaced as unsupported fields on
-the peer.
+The upstream CRD defines per-address-family `importFilter` and `exportFilter`
+objects (with `defaultAction`, `items`, prefix matchers, community modifiers).
+Simple string variants (`routeMap`, `prefixList`, `distributionList`) are also
+handled.
+
+Current behaviour: all filter/route-map field names are recognised (no longer
+surfaced as "unknown fields") and emitted as a dedicated unsupported marker:
+`has route-map/filter fields (...); route-map compilation not yet supported`.
+
+What is missing: compilation of filter specs into VyOS `set policy route-map`
+objects and binding them to the BGP neighbor per address-family. This requires
+a new translation stage (route-map object registry + per-rule emit) and is a
+planned but non-trivial addition.
 
 #### ~~BGP: timers not mapped~~ ✓
 
