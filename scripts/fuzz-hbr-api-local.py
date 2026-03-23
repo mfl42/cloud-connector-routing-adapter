@@ -205,8 +205,33 @@ def mutate_network_config(raw: dict, rng: random.Random, case_index: int) -> dic
     fabric["bgpPeers"] = random_bgp_peers(rng)
     fabric["staticRoutes"] = random_static_routes(rng)
 
+    # EVPN fields on fabric VRF
+    if rng.random() < 0.4:
+        fabric["vni"] = rng.randint(1, 16777215)
+        fabric["evpnExportRouteTargets"] = [f"65000:{rng.randint(1, 9999)}"]
+        fabric["evpnImportRouteTargets"] = [f"65000:{rng.randint(1, 9999)}"]
+        if rng.random() < 0.5:
+            fabric["evpnExportFilter"] = random_bgp_filter(rng, False)
+        if rng.random() < 0.3:
+            fabric["vrfImports"] = [
+                {"fromVrf": "tenant-a", "filter": {"defaultAction": {"type": "accept"}}}
+            ]
+
+    # Layer2s with full structure
     if rng.random() < 0.35:
-        spec["layer2s"] = {f"l2-{case_index}": {"vlan": rng.randint(100, 4000)}}
+        l2: dict = {
+            "vni": rng.randint(1, 16777215),
+            "vlan": rng.randint(1, 4096),
+            "mtu": rng.choice([1500, 4000, 9000]),
+            "routeTarget": f"65000:{rng.randint(1, 9999)}",
+        }
+        if rng.random() < 0.6:
+            l2["irb"] = {
+                "ipAddresses": [f"10.0.{rng.randint(1,254)}.1/24"],
+                "macAddress": "00:11:22:33:44:55",
+                "vrf": "fabric-a",
+            }
+        spec["layer2s"] = {f"l2-{case_index}": l2}
     else:
         spec.pop("layer2s", None)
 
