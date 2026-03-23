@@ -87,6 +87,10 @@ VyOS herite de l'architecture Vyatta — CLI transactionnel
 (`set`/`delete`/`commit`), configuration hierarchique, et plan de
 routage FRRouting (anciennement Quagga) — tout en ajoutant des
 fonctions modernes (API REST, conteneurisation, EVPN/VXLAN, WireGuard).
+Depuis quelques annees, VyOS supporte egalement l'acceleration du plan
+de donnees via **DPDK** et **VPP** (Vector Packet Processing, projet
+fd.io), permettant un forwarding haute performance en espace utilisateur
+adapte aux workloads telecom et NFV.
 
 Il fournit les fonctions d'un routeur professionnel :
 
